@@ -1,4 +1,4 @@
-# 🐟 XianYuApis — “闲鱼”第三方API集成库，AI客服智能体底座 
+# 🐟 XianYuApis — “闲鱼”第三方API集成库，AI客服智能体底座
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/node.js-18%2B-green)](https://nodejs.org/)
@@ -19,7 +19,8 @@
                 └──────────────── 发送消息 / 图片 ◄────────────────────────┘
 ```
 
-闲鱼官方没有开放 IM 消息接口。想要接入 GPT、Claude、本地大模型来做智能客服，首先需要能**稳定收发消息**。XianYuApis 解决的正是这个前置问题：
+闲鱼官方没有开放 IM 消息接口。想要接入 GPT、Claude、本地大模型来做智能客服，首先需要能**稳定收发消息**。XianYuApis
+解决的正是这个前置问题：
 
 - 逆向还原了闲鱼 WebSocket 私信协议（sign 签名 + base64 + Protobuf）
 - 封装全部 HTTP 接口（sign 参数已解密）
@@ -31,33 +32,30 @@
 
 ## 已实现功能
 
-| 模块 | 功能 | 状态 |
-|------|------|------|
-| HTTP API | 闲鱼所有 HTTP 接口（sign 签名已解密） | ✅ |
-| WebSocket | 私信实时收发（sign + base64 + Protobuf 协议） | ✅ |
-| 消息类型 | 文字、图片消息 | ✅ |
-| 会话管理 | 获取全部历史聊天记录 | ✅ |
-| 主动发送 | 主动向指定用户发消息 | ✅ |
-| Token 维持 | 自动刷新登录态，常驻进程不掉线 | ✅ |
-| 获取聊天记录 | 获取与指定用户的历史消息记录 | ✅ |
-| 商品信息 | 获取商品详情 | ✅ |
-| 媒体上传 | 上传图片并发送 | ✅ |
-| 登录 | 扫码获取cookie | ✅ |
-
+| 模块        | 功能                                  | 状态 |
+|-----------|-------------------------------------|----|
+| HTTP API  | 闲鱼所有 HTTP 接口（sign 签名已解密）            | ✅  |
+| WebSocket | 私信实时收发（sign + base64 + Protobuf 协议） | ✅  |
+| 消息类型      | 文字、图片消息                             | ✅  |
+| 会话管理      | 获取全部历史聊天记录                          | ✅  |
+| 主动发送      | 主动向指定用户发消息                          | ✅  |
+| Token 维持  | 自动刷新登录态，常驻进程不掉线                     | ✅  |
+| 获取聊天记录    | 获取与指定用户的历史消息记录                      | ✅  |
+| 商品信息      | 获取商品详情                              | ✅  |
+| 媒体上传      | 上传图片并发送                             | ✅  |
+| 登录        | 扫码获取cookie                          | ✅  |
 
 ---
 
 ## 成品案例 在本项目基础上继续构建的Agent项目
 
 - [XianyuAutoAgent](https://github.com/shaxiu/XianyuAutoAgent) — 基于本项目构建的闲鱼 AI 全自动客服智能体
-- [xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) -  基于本项目构建的闲鱼自动回复系统
-- [xianyu-auto-reply-fix](https://github.com/GuDong2003/xianyu-auto-reply-fix) -  基于本项目构建的闲鱼闲鱼管理系统
-- [xianyu-auto-reply](https://github.com/zhinianboke-new/xianyu-auto-reply) -  基于本项目构建的闲鱼 AI 全自动客服智能体
-- [xianyu-auto-reply](https://github.com/HJYHJYHJY/xianyu-auto-reply) -  基于本项目构建的闲鱼闲鱼自动回复系统
-- [xianyu-super-butler](https://github.com/23Star/xianyu-super-butler) -  基于本项目构建的闲鱼闲鱼超级管家
-- [XianyuAutoAgent](https://github.com/qOeOp/XianyuAutoAgent) -  基于本项目构建的闲鱼智能闲鱼客服机器人系统
-
-
+- [xianyu-auto-reply](https://github.com/zhinianboke/xianyu-auto-reply) - 基于本项目构建的闲鱼自动回复系统
+- [xianyu-auto-reply-fix](https://github.com/GuDong2003/xianyu-auto-reply-fix) - 基于本项目构建的闲鱼闲鱼管理系统
+- [xianyu-auto-reply](https://github.com/zhinianboke-new/xianyu-auto-reply) - 基于本项目构建的闲鱼 AI 全自动客服智能体
+- [xianyu-auto-reply](https://github.com/HJYHJYHJY/xianyu-auto-reply) - 基于本项目构建的闲鱼闲鱼自动回复系统
+- [xianyu-super-butler](https://github.com/23Star/xianyu-super-butler) - 基于本项目构建的闲鱼闲鱼超级管家
+- [XianyuAutoAgent](https://github.com/qOeOp/XianyuAutoAgent) - 基于本项目构建的闲鱼智能闲鱼客服机器人系统
 
 > 欢迎提交你基于本项目构建的 AI 应用，PR 随时欢迎！
 
@@ -73,7 +71,7 @@
 ### 安装依赖
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 配置 Cookie
@@ -86,7 +84,6 @@ cookies_str = r'your_cookie_string_here'
 ```
 
 > Cookie 必须是**登录后的状态**，否则无法获取消息。
-
 
 ### 直接运行
 
@@ -126,7 +123,7 @@ async def handle_message(self, message, websocket):
     # reply = f'{send_user_name} 说了: {send_message}'
 
     # 接入 AI 大模型（示例）
-    reply = await your_ai_agent(send_message)          # GPT / Claude / Qwen / 本地模型
+    reply = await your_ai_agent(send_message)  # GPT / Claude / Qwen / 本地模型
 
     await self.send_msg(websocket, cid, send_user_id, make_text(reply))
 ```
@@ -163,7 +160,6 @@ async def handle_message(self, message, websocket):
     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=cv-cat/XianYuApis&type=Date" />
   </picture>
 </a>
-
 
 ## 🍔 交流群
 

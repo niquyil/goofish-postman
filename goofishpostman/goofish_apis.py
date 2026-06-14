@@ -1,14 +1,18 @@
+from hashlib import md5
 from json import dumps
 from pathlib import Path
 from subprocess import PIPE, check_output
+from sys import stdout
 from time import sleep, time
 from typing import List
 from urllib.parse import quote
 
 from loguru import logger
+from qrcode import QRCode
 from requests import Session
 
-from .goofish_utils import generate_device_id, generate_sign
+from .cookies import Cookies
+from .goofish_utils import generate_device_id
 from .headers import SEC_CH_UA, USER_AGENT
 from .types import Delivery, Price
 
@@ -47,7 +51,7 @@ _HERE = Path(__file__).resolve().parent
 
 
 def _gen_tfstk(timeout: int = 15) -> str:
-    script = _HERE / 'utils' / 'generate_tfstk.js'
+    script = _HERE / 'utils' / 'tfstk.js'
     if not script.exists():
         return ''
     try:
@@ -133,8 +137,8 @@ def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode
             'stie': '77',
             'rnd': '0.6842814084442211',
         },
-        headers={
-            **_PASSPORT_HEADERS,
+        headers=_PASSPORT_HEADERS
+        | {
             'Referer': 'https://www.goofish.com/',
             'Sec-Fetch-Site': 'same-site',
             'Sec-Fetch-Dest': 'iframe',
@@ -164,7 +168,7 @@ def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode
     gen_resp = session.get(
         url='https://passport.goofish.com/newlogin/qrcode/generate.do',
         params=gen_params,
-        headers={**_PASSPORT_HEADERS, 'Referer': 'https://passport.goofish.com/mini_login.htm'},
+        headers=_PASSPORT_HEADERS | {'Referer': 'https://passport.goofish.com/mini_login.htm'},
         timeout=10,
     ).json()
 
@@ -179,11 +183,7 @@ def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode
     # 终端打印二维码（用半块字符 ▀▄█ 使其接近正方形）
     if show_qrcode:
         try:
-            import sys
-
-            import qrcode as qr_lib
-
-            qr = qr_lib.QRCode(border=1, box_size=1)
+            qr = QRCode(border=1, box_size=1)
             qr.add_data(qr_url)
             qr.make()
             matrix = qr.get_matrix()
@@ -204,8 +204,8 @@ def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode
                         line += ' '  #   上下都白
                 lines.append(line)
             qr_str = '\n'.join(lines) + '\n'
-            sys.stdout.buffer.write(qr_str.encode('utf-8', errors='replace'))
-            sys.stdout.buffer.flush()
+            stdout.buffer.write(qr_str.encode(encoding='utf-8', errors='replace'))
+            stdout.buffer.flush()
         except ImportError:
             print('[qrcode_login] pip install qrcode to show QR in terminal')
 
@@ -239,10 +239,10 @@ def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode
     while time() < deadline:
         body = {**query_base, 't': str(qr_t), 'ck': qr_ck}
         resp = session.post(
-            f'{query_url}?appName=xianyu&fromSite=77',
+            url=f'{query_url}?appName=xianyu&fromSite=77',
             data=body,
-            headers={
-                **_PASSPORT_HEADERS,
+            headers=_PASSPORT_HEADERS
+            | {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Origin': 'https://passport.goofish.com',
                 'Referer': 'https://passport.goofish.com/mini_login.htm',
@@ -291,8 +291,8 @@ def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode
                 'confirm': 'true',
             },
             data={'deviceId': cna},
-            headers={
-                **_PASSPORT_HEADERS,
+            headers=_PASSPORT_HEADERS
+            | {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Origin': 'https://passport.goofish.com',
                 'Referer': 'https://passport.goofish.com/mini_login.htm',
@@ -349,25 +349,36 @@ class Goofish:
         self.session = Session()
         self.session.cookies.update(cookies)
         self.device_id = device_id
-        self.cookies = {}
+        # self.cookies = {}
 
-    def get_token(self):
+    @staticmethod
+    def sign(timestamp: str, token: str, data: str) -> str:
+        return md5(f'{token}&{timestamp}&34839810&{data}'.encode()).hexdigest()
+
+    @property
+    def cookies(self) -> Cookies:
+        return Cookies.from_session(self.session)
+
+    def get_default_location(self):
         headers = {
             'Accept': 'application/json',
             'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
+            'Cache-Control': 'no-cache',
             'Content-Type': 'application/x-www-form-urlencoded',
-            'Host': 'h5api.m.goofish.com',
+            'Eagleeye-Userdata': 'spm-cnt=a21ybx',
             'Origin': 'https://www.goofish.com',
+            'Pragma': 'no-cache',
             'Priority': 'u=1, i',
             'Referer': 'https://www.goofish.com/',
             'Sec-Ch-Ua': SEC_CH_UA,
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Site': 'same-site',
-            'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
             'User-Agent': USER_AGENT,
         }
+        url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idle.local.poi.get/1.0/'
         params = {
             'jsv': '2.7.2',
             'appKey': '34839810',
@@ -378,93 +389,16 @@ class Goofish:
             'accountSite': 'xianyu',
             'dataType': 'json',
             'timeout': '20000',
-            'api': 'mtop.taobao.idlemessage.pc.login.token',
+            'api': 'mtop.taobao.idle.local.poi.get',
             'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.im.0.0',
-            'spm_pre': 'a21ybx.item.want.1.14ad3da6ALVq3n',
-            'log_id': '14ad3da6ALVq3n',
+            'spm_cnt': 'a21ybx.publish.0.0',
+            'spm_pre': 'a21ybx.item.sidebar.1.38262218ame5nr',
+            'log_id': '38262218ame5nr',
         }
-        data = f'{{"appKey":"444e9908a51d1cb236a27862abc769c9","deviceId":"{self.device_id}"}}'
-        token = self.session.cookies['_m_h5_tk'].split('_')[0]
-        params['sign'] = generate_sign(timestamp=params['t'], token=token, data=data)
-        response = self.session.post(url=self.login_url, data={'data': data}, headers=headers, params=params)
-        for response_cookie_key in response.cookies.get_dict().keys():
-            if response_cookie_key in self.session.cookies.get_dict().keys():
-                for key in self.session.cookies:
-                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
-                        self.session.cookies.clear(domain=key.domain, path=key.path, name=key.name)
-                        break
-        res_json = response.json()
-        if 'ret' in res_json and '令牌过期' in res_json['ret'][0]:
-            return self.get_token()
-        return res_json
-
-    def refresh_token(self):
-        headers = {
-            'Accept': 'application/json',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'User-Agent': USER_AGENT,
-        }
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time()) * 1000),
-            'v': '1.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.taobao.idlemessage.pc.loginuser.get',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.im.0.0',
-            'spm_pre': 'a21ybx.item.want.1.12523da6waCtUp',
-            'log_id': '12523da6waCtUp',
-        }
-        data = '{}'
-        token = self.session.cookies.get('_m_h5_tk').split('_')[0]
-        params['sign'] = generate_sign(timestamp=params['t'], token=token, data=data)
-        response = self.session.post(url=self.refresh_token_url, data={'data': data}, headers=headers, params=params)
-        for response_cookie_key in response.cookies:
-            if response_cookie_key in self.session.cookies:
-                for key in self.session.cookies:
-                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
-                        del self.session.cookies[key]
-                        break
-        return response.json()
-
-    def upload_media(self, media_path: str):
-        headers = {
-            'Accept': '*/*',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
-            'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'User-Agent': USER_AGENT,
-        }
-        params = {'floderId': '0', 'appkey': 'xy_chat', '_input_charset': 'utf-8'}
-        with open(media_path, 'rb') as f:
-            files = {'file': (Path(media_path).name, f, 'image/png')}
-            return self.session.post(url=self.upload_media_url, headers=headers, files=files, params=params).json()
+        data = '{"longitude":118.78248347393424,"latitude":31.91629189813543}'
+        token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
+        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
+        return self.session.post(url=url, data={'data': data}, headers=headers, params=params).json()
 
     def get_item_info(self, item_id):
         params = {
@@ -485,7 +419,7 @@ class Goofish:
         }
         data = f'{{"itemId":"{item_id}"}}'
         token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = generate_sign(timestamp=params['t'], token=token, data=data)
+        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
         return self.session.post(url=self.item_detail_url, data={'data': data}, params=params).json()
 
     def get_publish_channel(self, title: str, images_info: list):
@@ -548,29 +482,26 @@ class Goofish:
             )
         data = dumps(data, separators=(',', ':'))
         token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = generate_sign(timestamp=params['t'], token=token, data=data)
+        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
         return self.session.post(url=url, data={'data': data}, headers=headers, params=params).json()
 
-    def get_default_location(self):
+    def get_token(self):
         headers = {
             'Accept': 'application/json',
             'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
             'Content-Type': 'application/x-www-form-urlencoded',
-            'Eagleeye-Userdata': 'spm-cnt=a21ybx',
+            'Host': 'h5api.m.goofish.com',
             'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
             'Priority': 'u=1, i',
             'Referer': 'https://www.goofish.com/',
             'Sec-Ch-Ua': SEC_CH_UA,
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-site',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty',
             'User-Agent': USER_AGENT,
         }
-        url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idle.local.poi.get/1.0/'
         params = {
             'jsv': '2.7.2',
             'appKey': '34839810',
@@ -581,16 +512,26 @@ class Goofish:
             'accountSite': 'xianyu',
             'dataType': 'json',
             'timeout': '20000',
-            'api': 'mtop.taobao.idle.local.poi.get',
+            'api': 'mtop.taobao.idlemessage.pc.login.token',
             'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.publish.0.0',
-            'spm_pre': 'a21ybx.item.sidebar.1.38262218ame5nr',
-            'log_id': '38262218ame5nr',
+            'spm_cnt': 'a21ybx.im.0.0',
+            'spm_pre': 'a21ybx.item.want.1.14ad3da6ALVq3n',
+            'log_id': '14ad3da6ALVq3n',
         }
-        data = '{"longitude":118.78248347393424,"latitude":31.91629189813543}'
-        token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = generate_sign(timestamp=params['t'], token=token, data=data)
-        return self.session.post(url=url, data={'data': data}, headers=headers, params=params).json()
+        data = f'{{"appKey":"444e9908a51d1cb236a27862abc769c9","deviceId":"{self.device_id}"}}'
+        token = self.session.cookies['_m_h5_tk'].split('_')[0]
+        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
+        response = self.session.post(url=self.login_url, data={'data': data}, headers=headers, params=params)
+        for response_cookie_key in response.cookies.get_dict().keys():
+            if response_cookie_key in self.session.cookies.get_dict().keys():
+                for key in self.session.cookies:
+                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
+                        self.session.cookies.clear(domain=key.domain, path=key.path, name=key.name)
+                        break
+        res_json = response.json()
+        if 'ret' in res_json and '令牌过期' in res_json['ret'][0]:
+            return self.get_token()
+        return res_json
 
     def publish(self, images_path: List[str], goods_desc: str, price: Price | None, delivery: Delivery):
         headers = {
@@ -676,7 +617,7 @@ class Goofish:
                 data['itemPostFeeDTO']['supportFreight'] = True
                 data['itemPostFeeDTO']['postPriceInCent'] = str(int(delivery.price * 100))
                 data['itemPostFeeDTO']['templateId'] = '0'
-            case  '无需邮寄':
+            case '无需邮寄':
                 data['itemPostFeeDTO']['templateId'] = '0'
             case _:
                 raise ValueError('Invalid delivery choice')
@@ -737,5 +678,72 @@ class Goofish:
 
         data = dumps(data, separators=(',', ':'))
         token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = generate_sign(timestamp=params['t'], token=token, data=data)
+        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
         return self.session.post(url=url, data={'data': data}, headers=headers, params=params).json()
+
+    def refresh_token(self):
+        headers = {
+            'Accept': 'application/json',
+            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
+            'Cache-Control': 'no-cache',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Origin': 'https://www.goofish.com',
+            'Pragma': 'no-cache',
+            'Priority': 'u=1, i',
+            'Referer': 'https://www.goofish.com/',
+            'Sec-Ch-Ua': SEC_CH_UA,
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'User-Agent': USER_AGENT,
+        }
+        params = {
+            'jsv': '2.7.2',
+            'appKey': '34839810',
+            't': str(int(time()) * 1000),
+            'v': '1.0',
+            'type': 'originaljson',
+            'accountSite': 'xianyu',
+            'dataType': 'json',
+            'timeout': '20000',
+            'api': 'mtop.taobao.idlemessage.pc.loginuser.get',
+            'sessionOption': 'AutoLoginOnly',
+            'spm_cnt': 'a21ybx.im.0.0',
+            'spm_pre': 'a21ybx.item.want.1.12523da6waCtUp',
+            'log_id': '12523da6waCtUp',
+        }
+        data = '{}'
+        token = self.session.cookies.get('_m_h5_tk').split('_')[0]
+        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
+        response = self.session.post(url=self.refresh_token_url, data={'data': data}, headers=headers, params=params)
+        for response_cookie_key in response.cookies:
+            if response_cookie_key in self.session.cookies:
+                for key in self.session.cookies:
+                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
+                        del self.session.cookies[key]
+                        break
+        return response.json()
+
+    def upload_media(self, media_path: str):
+        headers = {
+            'Accept': '*/*',
+            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
+            'Cache-Control': 'no-cache',
+            'Origin': 'https://www.goofish.com',
+            'Pragma': 'no-cache',
+            'Priority': 'u=1, i',
+            'Referer': 'https://www.goofish.com/',
+            'Sec-Ch-Ua': SEC_CH_UA,
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-site',
+            'User-Agent': USER_AGENT,
+        }
+        params = {'floderId': '0', 'appkey': 'xy_chat', '_input_charset': 'utf-8'}
+        with open(media_path, 'rb') as f:
+            files = {'file': (Path(media_path).name, f, 'image/png')}
+            return self.session.post(url=self.upload_media_url, headers=headers, files=files, params=params).json()

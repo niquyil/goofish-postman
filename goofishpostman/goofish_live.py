@@ -7,17 +7,11 @@ from threading import Thread
 from loguru import logger
 from websockets import ClientConnection, connect
 
+from .cookies import Cookies
 from .goofish_apis import Goofish
-from .goofish_utils import (
-    decrypt,
-    generate_device_id,
-    generate_mid,
-    generate_uuid,
-    get_session_cookies_str,
-    trans_cookies,
-)
+from .goofish_utils import decrypt, generate_device_id, generate_mid, generate_uuid
 from .headers import USER_AGENT
-from .types import Message, make_text
+from .types import Message, TextMessage
 
 
 class GoofishLive:
@@ -25,10 +19,10 @@ class GoofishLive:
 
     def __init__(self, cookies_str: str) -> None:
         self.cookies_str = cookies_str
-        self.cookies = trans_cookies(cookies_str)
+        self.cookies = Cookies.from_str(cookies_str)
         self.myid = self.cookies['unb']
         self.device_id = generate_device_id(self.myid)
-        self.goofish = Goofish(self.cookies, self.device_id)
+        self.goofish = Goofish(cookies=self.cookies, device_id=self.device_id)
 
     async def list_all_conversations(self, cid):
         headers = {
@@ -36,7 +30,7 @@ class GoofishLive:
             'Accept-Language': 'zh-CN,zh;q=0.9',
             'Cache-Control': 'no-cache',
             'Connection': 'Upgrade',
-            'Cookie': get_session_cookies_str(self.goofish.session),
+            'Cookie': self.goofish.cookies,
             'Host': 'wss-goofish.dingtalk.com',
             'Origin': 'https://www.goofish.com',
             'Pragma': 'no-cache',
@@ -119,7 +113,7 @@ class GoofishLive:
         }
         await websocket.send(dumps(msg))
 
-    async def send_msg(self, websocket: ClientConnection, cid: str, toid: str, message: Message):
+    async def send_message(self, websocket: ClientConnection, cid: str, toid: str, message: Message):
         msg = {
             'lwp': '/r/MessageSend/sendByReceiverScope',
             'headers': {'mid': generate_mid()},
@@ -204,24 +198,24 @@ class GoofishLive:
         logger.info('init')
 
     @staticmethod
-    async def heart_beat(websocket: ClientConnection):
+    async def heart_beat(websocket: ClientConnection) -> None:
         while True:
             msg = {'lwp': '/!', 'headers': {'mid': generate_mid()}}
             await websocket.send(dumps(msg))
             await asyncio.sleep(15)
 
-    def user_alive(self):
+    def user_alive(self) -> None:
         while True:
             time.sleep(600)
             self.goofish.refresh_token()
 
-    async def main(self):
+    async def main(self) -> None:
         headers = {
             'Accept-Encoding': 'gzip, deflate, br, zstd',
             'Accept-Language': 'zh-CN,zh;q=0.9',
             'Cache-Control': 'no-cache',
             'Connection': 'Upgrade',
-            'Cookie': get_session_cookies_str(self.goofish.session),
+            'Cookie': self.goofish.cookies,
             'Host': 'wss-goofish.dingtalk.com',
             'Origin': 'https://www.goofish.com',
             'Pragma': 'no-cache',
@@ -251,7 +245,7 @@ class GoofishLive:
 
                 await self.handle_message(message, websocket)
 
-    async def handle_message(self, message, websocket: ClientConnection):
+    async def handle_message(self, message, websocket: ClientConnection) -> None:
         try:
             data = message['body']['syncPushPackage']['data'][0]['data']
             data = loads(data)
@@ -273,7 +267,7 @@ class GoofishLive:
                 # 回复文字
                 # reply = f'Hello, {send_user_name}! I am a robot. I am not available now. I will reply to you later.'
                 reply = f'{send_user_name} 说了: {send_message}'
-                await self.send_msg(websocket, cid, send_user_id, make_text(reply))
+                await self.send_message(websocket, cid, send_user_id, TextMessage(text=reply))
 
                 # 回复图片
                 # res_json = self.xianyu.upload_media(r"D:\Desktop\1.png")
@@ -282,17 +276,3 @@ class GoofishLive:
                 # await self.send_msg(websocket, cid, send_user_id, make_image(image_object["url"], width, height))
             except Exception as e:
                 logger.error(e)
-
-
-if __name__ == '__main__':
-    cookies_str = r''
-    xianyuLive = GoofishLive(cookies_str)
-
-    # 1 获取全部聊天记录
-    # cid = '47812870000'
-    # all_messages = asyncio.run(xianyuLive.list_all_conversations(cid))
-    # for message in all_messages:
-    #     print(message)
-
-    # 2 常驻进程 用于接收消息和自动回复
-    asyncio.run(xianyuLive.main())

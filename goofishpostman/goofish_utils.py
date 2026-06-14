@@ -1,46 +1,16 @@
-from __future__ import annotations
-
 from pathlib import Path
 from pkgutil import get_data
-from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import execjs
-from loguru import logger
 
 from . import __package__ as package
 
-if TYPE_CHECKING:
-    from requests import Session
-
-goofish_js = execjs.compile(
-    get_data(package=package, resource=str(Path('script') / 'goofish_js.js')).decode()
-)
-
-
-def trans_cookies(cookies_str: str):
-    cookies = dict()
-    for cookie in cookies_str.split('; '):
-        try:
-            key, *value = cookie.split('=')
-            cookies[key] = '='.join(value)
-        except Exception as e:
-            logger.error(e)
-    return cookies
-
-
-def trans_cookies_str(cookies_dict: dict) -> str:
-    return '; '.join(f'{key}={value}' for key, value in cookies_dict.items())
-
-
-def get_session_cookies(session: Session) -> dict[str, str | None]:
-    return session.cookies.get_dict()
-
-
-def get_session_cookies_str(session: Session) -> str:
-    return '; '.join(f'{key}={value}' for key, value in session.cookies.get_dict().items())
+goofish_js = execjs.compile(get_data(package=package, resource=str(Path('script') / 'goofish.js')).decode())
 
 
 def generate_mid() -> str:
+    # return f'{randint(a=0, b=999)}{int(time()*1000)} 0'
     return goofish_js.call('generate_mid')
 
 
@@ -48,12 +18,8 @@ def generate_uuid() -> str:
     return goofish_js.call('generate_uuid')
 
 
-def generate_device_id(user_id: str) -> str:
-    return goofish_js.call('generate_device_id', user_id)
-
-
-def generate_sign(timestamp: str, token: str, data: str) -> str:
-    return goofish_js.call('generate_sign', timestamp, token, data)
+def generate_device_id(user_id: str | None) -> str:
+    return f'{str(uuid4()).upper()}-{user_id}'
 
 
 def decrypt(string: str) -> str:

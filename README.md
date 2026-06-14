@@ -125,7 +125,7 @@ async def handle_message(self, message, websocket):
     # 接入 AI 大模型（示例）
     reply = await your_ai_agent(send_message)  # GPT / Claude / Qwen / 本地模型
 
-    await self.send_msg(websocket, cid, send_user_id, make_text(reply))
+    await self.send_message(websocket, cid, send_user_id, make_text(reply))
 ```
 
 ---

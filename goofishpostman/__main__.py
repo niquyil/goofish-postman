@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from asyncio import run
 from json import loads
 from os import getenv
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 from execjs import ProgramError
@@ -11,6 +14,8 @@ from .goofish_utils import decrypt
 from .path import ENV_FILE
 from .sender import Sender
 
+if TYPE_CHECKING:
+    from websockets import ClientConnection
 
 class GoofishPostman(GoofishLive):
     def __init__(self, cookies_str: str, sender: Sender) -> None:
@@ -18,7 +23,7 @@ class GoofishPostman(GoofishLive):
         self.username = self.cookies['tracknick']
         self.sender = sender
 
-    async def handle_message(self, message, websocket):
+    async def handle_message(self, message, websocket: ClientConnection) -> None:
         try:
             data = message['body']['syncPushPackage']['data'][0]['data']
         except KeyError:

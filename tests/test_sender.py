@@ -98,7 +98,7 @@ def test_card_details_use_small_text_and_a_divider() -> None:
     elements = payload['card']['body']['elements']
     assert elements[0] == {
         'tag': 'markdown',
-        'content': '**时间** 09-11 23:55 ｜ **商品** 玲娜贝儿钱包',
+        'content': '**时间** 09-11 23:55\n**商品** 玲娜贝儿钱包',
         'text_size': 'notation',
     }
     assert elements[1] == {'tag': 'hr'}

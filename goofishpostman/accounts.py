@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from httpx import AsyncClient, HTTPError, TimeoutException
 from loguru import logger
 
+from .goofish_utils import CONTENT_TYPE_LABELS
 from .sender import DEFAULT_HEADER_COLOR, FEISHU_HEADERS, build_card_payload, build_text_payload, build_webhook_url
 
 if TYPE_CHECKING:
@@ -24,6 +25,9 @@ _TOKEN_SAFETY_MARGIN = 300
 _MAX_IMAGE_CACHE = 200
 # 单张图片下载上限（闲鱼原图一般几百 KB，给足余量）
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# 图片内嵌成功后要一并去掉的标注行：正文里那句 `[图片]` 的作用是告诉网页"这是图片"，
+# 图片本身都显示出来了就不必再留一句标注
+_IMAGE_LABEL_LINES = frozenset({f'[{CONTENT_TYPE_LABELS[2]}]'})
 # 下载闲鱼图片要带 Referer/UA：不带的话部分地址直接返回 420（实测换头后 200）
 IMAGE_DOWNLOAD_HEADERS = {
     'Referer': 'https://www.goofish.com/',
@@ -168,7 +172,9 @@ class FeishuNotifier:
                 replaced.add(url)
         if not markdown:
             return content
-        return '\n'.join([drop_lines(content, replaced), *markdown])
+        # 内嵌成功的图片，连同正文里那句 `[图片]` 标注一起去掉：图片就在眼前，不用再标一遍
+        head = drop_lines(content, replaced | _IMAGE_LABEL_LINES)
+        return '\n'.join(part for part in [head, *markdown] if part)
 
     async def resolve_image_key(self, url: str) -> str | None:
         """把图片地址换成飞书的 image_key（同一张图只上传一次）；失败返回 None。"""

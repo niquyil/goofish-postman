@@ -45,8 +45,8 @@ def pick_header_color(seed: str) -> str:
 
 
 def format_details(details: dict[str, str]) -> str:
-    """把明细拼成一行小字（取不到的字段不占位）。"""
-    return ' ｜ '.join(f'**{key}** {value}' for key, value in details.items() if value)
+    """把明细拼成多行小字，一个属性一行（取不到的字段不占行）。"""
+    return '\n'.join(f'**{key}** {value}' for key, value in details.items() if value)
 
 
 # 正文里要变成可点链接的地址（http/https）。`fleamarket://` 这类 App 深链不转：

@@ -269,9 +269,10 @@ def test_notifier_posts_card_with_details_code_block(monkeypatch) -> None:
     assert card['schema'] == '2.0'
     assert card['header']['title']['content'] == '买家 → 主力号'
     body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
+    # 一个属性一行；内嵌成功后连正文里那句 `[图片]` 标注也去掉（图片就在眼前）
     assert body['elements'][0] == {
         'tag': 'markdown',
-        'content': '**时间** 09-11 23:55:32 ｜ **商品** 玲娜贝儿钱包',
+        'content': '**时间** 09-11 23:55:32\n**商品** 玲娜贝儿钱包',
         'text_size': 'notation',
     }
     # 明细与正文之间有分割线；正文的换行与空行原样保留
@@ -372,9 +373,10 @@ def test_image_is_inlined_with_the_uploaded_key(monkeypatch) -> None:
     assert upload['data'] == {'image_type': 'message'}
 
     body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
-    # 标注留着当小标题，地址行换成内嵌图片（多图时就是「[图片]」下面排几张图）
-    assert body['elements'][0] == {'tag': 'markdown', 'content': '[图片]\n![图片](img-key-1)'}
-    assert IMAGE_URL not in str(body)  # 地址行已被内嵌图片取代
+    # 标注行与地址行都被内嵌图片取代，正文里只剩图片本身
+    assert body['elements'][0] == {'tag': 'markdown', 'content': '![图片](img-key-1)'}
+    assert IMAGE_URL not in str(body)
+    assert '[图片]' not in body['elements'][0]['content'].splitlines()  # 没有单独的标注行
 
 
 def test_image_keeps_link_without_app_credentials(monkeypatch) -> None:

@@ -1,4 +1,4 @@
-"""把各账号收到的私信汇总推送到同一个飞书机器人。"""
+"""把各账号收到的私信汇总推送到同一个飞书机器人（企业自建应用）。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,7 @@ from httpx import AsyncClient, HTTPError, TimeoutException
 from loguru import logger
 
 from .goofish_utils import CONTENT_TYPE_LABELS
-from .sender import (
-    DEFAULT_HEADER_COLOR,
-    FEISHU_HEADERS,
-    build_app_message,
-    build_card_payload,
-    build_text_payload,
-    build_webhook_url,
-)
+from .sender import DEFAULT_HEADER_COLOR, FEISHU_HEADERS, build_app_message, build_card, build_text_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -56,25 +49,6 @@ def format_direction(account_label: str, info: MessageInfo, sender: str = '') ->
     return f'{who} → {account_label}'
 
 
-def format_message(account_label: str, info: MessageInfo, text: str, sender: str = '') -> str:
-    """纯文本形态的飞书消息（卡片发不出去时的兜底、以及测试用）。
-
-    形如：
-        网课学习私人助理 → xy773249480508(2221114099805)
-        在吗
-    """
-    return f'{format_direction(account_label, info, sender)}\n{text}'
-
-
-def is_response_ok(body: dict) -> bool:
-    """飞书 webhook 成功时 code=0；部分网关返回 StatusCode。两者都没有才算失败。"""
-    if body.get('code') is not None:
-        return body['code'] == 0
-    if body.get('StatusCode') is not None:
-        return body['StatusCode'] == 0
-    return False
-
-
 def build_image_markdown(image_key: str, alt: str = '图片') -> str:
     """卡片 markdown 里的内嵌图片。
 
@@ -90,24 +64,12 @@ def drop_lines(text: str, values: set[str]) -> str:
 
 
 class FeishuNotifier:
-    """把消息发到飞书。
+    """把消息发到飞书（企业自建应用，需要 app_id + app_secret + chat_id）。
 
-    优先用「企业自建应用」发送（app_id + app_secret + chat_id，机器人要在那个群里）：
-    这条通道能内嵌图片，消息以机器人应用的身份发出。三者缺任意一个就退回自定义机器人的
-    webhook（uuid / secret），两套都配了就只用自建应用，不会重复发送。
+    三个都齐了才会真正发送；缺任何一个都只是空操作（在网页上补齐即可）。
     """
 
-    def __init__(
-        self,
-        uuid: str = '',
-        secret: str = '',
-        app_id: str = '',
-        app_secret: str = '',
-        chat_id: str = '',
-        timeout: float = 10.0,
-    ) -> None:
-        self.uuid = uuid.strip()
-        self.secret = secret.strip()
+    def __init__(self, app_id: str = '', app_secret: str = '', chat_id: str = '', timeout: float = 10.0) -> None:
         self.app_id = app_id.strip()
         self.app_secret = app_secret.strip()
         self.chat_id = chat_id.strip()
@@ -119,19 +81,12 @@ class FeishuNotifier:
         self._image_keys: dict[str, str] = {}
 
     @property
-    def configured(self) -> bool:
-        return bool(self.uuid)
-
-    @property
-    def webhook(self) -> str:
-        return build_webhook_url(self.uuid)
-
-    @property
     def can_upload_images(self) -> bool:
         return bool(self.app_id and self.app_secret)
 
     @property
     def can_send_via_app(self) -> bool:
+        """能发消息的前提：应用凭据 + 目标群。"""
         return bool(self.can_upload_images and self.chat_id)
 
     def _get_client(self) -> AsyncClient:
@@ -161,11 +116,8 @@ class FeishuNotifier:
         self._token_expires_at = 0.0
 
     async def send(self, message: str) -> None:
-        """纯文本推送（告警等不需要代码框的场景）。"""
-        if self.can_send_via_app:
-            await self._send_via_app(build_app_message(self.chat_id, 'text', {'text': message}))
-            return
-        await self._post(build_text_payload(message, self.secret))
+        """纯文本推送（告警等不需要卡片格式的场景）。"""
+        await self._send(build_app_message(self.chat_id, 'text', build_text_message(message)))
 
     async def send_card(
         self,
@@ -181,18 +133,12 @@ class FeishuNotifier:
         标注一起去掉），传不上去的原样保留成可点链接。
         """
         body = await self._inline_images(content, images)
-        if self.can_send_via_app:
-            # 自建应用发卡片：content 直接就是卡片对象（没有 webhook 那层 msg_type/card 包装），
-            # 也用不着签名 —— timestamp/sign 只属于自定义机器人
-            card = build_card_payload(title, body, details, color=color)
-            await self._send_via_app(build_app_message(self.chat_id, 'interactive', card['card']))
-            return
-        await self._post(build_card_payload(title, body, details, self.secret, color))
+        await self._send(build_app_message(self.chat_id, 'interactive', build_card(title, body, details, color)))
 
-    async def _send_via_app(self, payload: dict) -> None:
+    async def _send(self, payload: dict) -> None:
         """用自建应用发消息（需要 tenant_access_token）。"""
         if not self.can_send_via_app:
-            logger.debug('未配置自建应用或目标群，跳过')
+            logger.debug('未配置飞书应用凭据或目标群，跳过推送')
             return
         token = await self.get_tenant_token()
         try:
@@ -314,19 +260,6 @@ class FeishuNotifier:
         if body.get('code') != 0 or not image_key:
             raise NotifyError(f'上传图片失败: {body}')
         return image_key
-
-    async def _post(self, payload: dict) -> None:
-        if not self.configured:
-            logger.debug('未配置飞书机器人 uuid，跳过推送')
-            return
-        try:
-            response = await self._get_client().post(self.webhook, json=payload)
-            body = response.json()
-        except (HTTPError, TimeoutException, ValueError) as e:
-            raise NotifyError(f'飞书推送失败: {e}') from e
-        if not is_response_ok(body):
-            raise NotifyError(f'飞书返回错误: {body}')
-        logger.debug(f'飞书推送成功: {body.get("msg")}')
 
     async def send_account_message(
         self,

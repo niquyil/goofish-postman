@@ -266,17 +266,13 @@ function pushEvent(event) {
 // ── 飞书配置 ────────────────────────────────────────────────────────────────
 function renderNotify() {
   if (!notifySettings) return;
-  document.getElementById('notify-uuid').value = notifySettings.uuid || '';
   document.getElementById('notify-app-id').value = notifySettings.app_id || '';
   document.getElementById('notify-enabled').checked = Boolean(notifySettings.enabled);
   const state = document.getElementById('notify-state');
-  if (notifySettings.can_send_via_app && notifySettings.enabled) {
+  if (notifySettings.configured && notifySettings.enabled) {
     state.textContent = '机器人应用';
     state.className = 'pill pill-ok';
-  } else if (notifySettings.configured && notifySettings.enabled) {
-    state.textContent = 'Webhook';
-    state.className = 'pill pill-ok';
-  } else if (notifySettings.configured || notifySettings.can_send_via_app) {
+  } else if (notifySettings.configured) {
     state.textContent = '已配置未启用';
     state.className = 'pill pill-warn';
   } else {
@@ -317,20 +313,16 @@ async function loadNotifyChats() {
 async function loadNotify() {
   const body = await api('/api/notify');
   notifySettings = {
-    uuid: body.uuid,
-    configured: Boolean(body.uuid),
-    enabled: body.enabled,
-    secret_set: body.secret_set,
     app_id: body.app_id,
     app_secret_set: body.app_secret_set,
     chat_id: body.chat_id,
-    can_upload_images: body.can_upload_images,
-    can_send_via_app: body.can_send_via_app,
-    transport: body.transport,
+    has_app_credentials: body.has_app_credentials,
+    configured: body.configured,
+    enabled: body.enabled,
   };
   renderNotify();
   renderChatOptions(body.chat_id ? [{ chat_id: body.chat_id, name: body.chat_id }] : [], body.chat_id);
-  if (body.can_upload_images) loadNotifyChats(); // 填了应用凭据就把群列表拉出来
+  if (body.has_app_credentials) loadNotifyChats(); // 填了应用凭据就把群列表拉出来
 }
 
 // ── 数据加载与实时流 ────────────────────────────────────────────────────────
@@ -606,19 +598,15 @@ function bind() {
   document.getElementById('notify-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const payload = {
-      uuid: document.getElementById('notify-uuid').value.trim(),
       app_id: document.getElementById('notify-app-id').value.trim(),
       chat_id: document.getElementById('notify-chat-id').value.trim(),
       enabled: document.getElementById('notify-enabled').checked,
     };
-    // 密钥类字段留空表示"不改动"，避免每次保存都把已存的密钥清掉
-    const secret = document.getElementById('notify-secret').value.trim();
-    if (secret) payload.secret = secret;
+    // 密钥留空表示"不改动"，避免每次保存都把已存的密钥清掉
     const appSecret = document.getElementById('notify-app-secret').value.trim();
     if (appSecret) payload.app_secret = appSecret;
     try {
       await api('/api/notify', { method: 'PUT', body: JSON.stringify(payload) });
-      document.getElementById('notify-secret').value = '';
       document.getElementById('notify-app-secret').value = '';
       await loadNotify();
       toast('飞书配置已保存');

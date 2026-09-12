@@ -1,41 +1,21 @@
-from base64 import b64encode
-from functools import cached_property
-from hashlib import sha256
-from hmac import new
+"""飞书卡片的组装。
+
+发送走的是「企业自建应用」接口（见 accounts.FeishuNotifier）：
+`content` 必须是 JSON 字符串、带 Authorization，不用签名 ——
+所以这里只负责把卡片对象拼出来，不涉及传送方式。
+"""
+
+from __future__ import annotations
+
 from json import dumps
 from re import compile as compile_pattern
-from time import time
 from zlib import crc32
 
-from httpx import AsyncClient
-from loguru import logger
-
 FEISHU_HEADERS = {'Content-Type': 'application/json'}
-# 飞书自定义机器人的 webhook（现在只作为没配自建应用时的备用通道）
-WEBHOOK_TEMPLATE = 'https://open.feishu.cn/open-apis/bot/v2/hook/{uuid}'
-
-
-def build_webhook_url(uuid: str) -> str:
-    return WEBHOOK_TEMPLATE.format(uuid=uuid.strip())
-
-
-def generate_feishu_sign(secret: str, timestamp: int) -> str:
-    """飞书自定义机器人的签名：以 "{timestamp}\\n{secret}" 为 key 做 HMAC-SHA256 再 base64。"""
-    hmac_code = new(key=f'{timestamp}\n{secret}'.encode(), digestmod=sha256).digest()
-    return b64encode(hmac_code).decode('utf-8')
-
-
-def build_text_payload(message: str, secret: str | None = None) -> dict:
-    payload: dict = {'msg_type': 'text', 'content': {'text': message}}
-    return _with_sign(payload, secret)
 
 
 def build_app_message(receive_id: str, msg_type: str, content: dict) -> dict:
-    """自建应用发消息的请求体。
-
-    与 webhook 形状不同：`content` 必须是**JSON 字符串**（webhook 那边是对象），
-    也没有 timestamp/sign —— 签名只属于自定义机器人。
-    """
+    """自建应用发消息的请求体（`content` 是 JSON 字符串）。"""
     return {'receive_id': receive_id, 'msg_type': msg_type, 'content': dumps(content, ensure_ascii=False)}
 
 
@@ -82,14 +62,10 @@ def _to_markdown_link(match) -> str:
     return f'[{token}]({token})'
 
 
-def build_card_payload(
-    title: str,
-    content: str,
-    details: dict[str, str] | None = None,
-    secret: str | None = None,
-    color: str = DEFAULT_HEADER_COLOR,
+def build_card(
+    title: str, content: str, details: dict[str, str] | None = None, color: str = DEFAULT_HEADER_COLOR
 ) -> dict:
-    """富文本卡片：标题标明消息流向，明细用一行小号灰字，正文用普通文本。
+    """富文本卡片：标题标明消息流向，明细是多行小号灰字，正文用普通文本。
 
     标题已经承担了"这是谁发给谁"的信息，正文不必再抢视觉；明细（时间/商品名）是辅助信息，
     用 markdown 的 notation 字号（小号灰字）渲染，再加一条分割线跟正文分开 ——
@@ -103,50 +79,14 @@ def build_card_payload(
         elements.append({'tag': 'markdown', 'content': line, 'text_size': 'notation'})
         elements.append({'tag': 'hr'})
     elements.append({'tag': 'markdown', 'content': linkify_urls(content)})
-    payload: dict = {
-        'msg_type': 'interactive',
-        'card': {
-            'schema': '2.0',
-            'config': {'update_multi': True},
-            'header': {'title': {'tag': 'plain_text', 'content': title}, 'template': color},
-            'body': {'direction': 'vertical', 'elements': elements},
-        },
+    return {
+        'schema': '2.0',
+        'config': {'update_multi': True},
+        'header': {'title': {'tag': 'plain_text', 'content': title}, 'template': color},
+        'body': {'direction': 'vertical', 'elements': elements},
     }
-    return _with_sign(payload, secret)
 
 
-def _with_sign(payload: dict, secret: str | None) -> dict:
-    if secret:
-        timestamp = int(time())
-        payload |= {'timestamp': str(timestamp), 'sign': generate_feishu_sign(secret, timestamp)}
-    return payload
-
-
-class Sender:
-    """单条推送到飞书（命令行入口在用）。
-
-    给了 title 就发富文本卡片（正文代码块），否则退回纯文本。
-    """
-
-    def __init__(self, uuid: str | None, secret: str | None = None) -> None:
-        self.uuid = uuid
-        self.secret = secret
-
-    @cached_property
-    def webhook(self) -> str:
-        return build_webhook_url(self.uuid or '')
-
-    def generate_sign(self, timestamp: int) -> str:
-        return generate_feishu_sign(self.secret or '', timestamp)
-
-    def build_payload(self, message: str) -> dict:
-        return build_text_payload(message, self.secret)
-
-    def build_card(self, title: str, content: str, details: dict[str, str] | None = None) -> dict:
-        return build_card_payload(title, content, details, self.secret)
-
-    async def send_message(self, message: str, title: str = '') -> None:
-        payload = self.build_card(title, message) if title else self.build_payload(message)
-        async with AsyncClient(headers=FEISHU_HEADERS, timeout=10.0) as client:
-            response = await client.post(self.webhook, json=payload)
-            logger.debug(response.json().get('msg'))
+def build_text_message(message: str) -> dict:
+    """纯文本消息体（告警等不需要卡片格式的场景）。"""
+    return {'text': message}

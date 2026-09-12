@@ -234,10 +234,24 @@ def test_build_snapshot_shape(tmp_dir) -> None:
         assert snapshot['accounts'][0]['status'] == 'stopped'
         assert 'cookie' not in snapshot['accounts'][0]
         # notify 段来自持久化配置，而不是推送器实例
-        assert snapshot['notify'] == {'uuid': '', 'configured': False, 'enabled': True}
+        assert snapshot['notify'] == {
+            'app_id': '',
+            'chat_id': '',
+            'app_secret_set': False,
+            'has_app_credentials': False,
+            'configured': False,
+            'enabled': True,
+        }
 
-        store.update_notify(uuid='uuid-9')
-        assert supervisor.build_snapshot()['notify'] == {'uuid': 'uuid-9', 'configured': True, 'enabled': True}
+        store.update_notify(app_id='cli_9', app_secret='sec', chat_id='oc_9')
+        assert supervisor.build_snapshot()['notify'] == {
+            'app_id': 'cli_9',
+            'chat_id': 'oc_9',
+            'app_secret_set': True,
+            'has_app_credentials': True,
+            'configured': True,
+            'enabled': True,
+        }
 
     run(run_scenario())
 

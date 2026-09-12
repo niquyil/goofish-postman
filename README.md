@@ -92,7 +92,7 @@ uv sync
 
 ## 方式一：Web 管理台（推荐，支持多账号汇总）
 
-同时登录多个闲鱼账号，把各账号收到的私信汇总推送到**同一个飞书机器人**（应用机器人或自定义机器人），并在网页里管理账号。
+同时登录多个闲鱼账号，把各账号收到的私信汇总推送到**同一个飞书机器人**（企业自建应用），并在网页里管理账号。
 
 ```bash
 uv run python -m goofishpostman web
@@ -101,11 +101,8 @@ uv run python -m goofishpostman web
 
 打开页面后：
 
-1. 在「飞书推送」里配置发送方式：
-   - **机器人应用（推荐）**：填**应用 ID / 应用密钥**，点「获取群列表」挑一个**目标群**保存 ——
-     消息以应用机器人身份发出，图片能直接内嵌（见下面的「用机器人应用发送」）；
-   - **自定义机器人（备用）**：填 webhook 的 **UUID**（`https://open.feishu.cn/open-apis/bot/v2/hook/`
-     后面那一段），开了「签名校验」再把密钥填上。两套都填时只用机器人应用，不会重复发送；
+1. 在「飞书推送」里填**应用 ID / 应用密钥**，点「获取群列表」挑一个**目标群**保存 ——
+   消息以应用机器人身份发出，图片能直接内嵌（见下面的「用机器人应用发送」）；
 2. 添加账号有两种方式：
    - **📱 扫码添加（推荐）**：点按钮后用手机闲鱼 App 扫二维码并在手机上确认，登录成功后账号会自动建好并开始监听；
    - **粘贴 Cookie**：从浏览器开发者工具复制登录后的完整 Cookie。
@@ -176,9 +173,9 @@ uv run python -m goofishpostman web
 >   而「不是监听账号自己触发的」不用额外判断：这类卡片的 `senderUserId` 就是操作方
 >   （实测自己拍下的卡片 `senderUserId` = 本账号 unb），已有的「自己发的不转发」逻辑会先过滤掉。
 
-#### 用机器人应用发送（推荐）
+#### 用机器人应用发送
 
-推荐用**企业自建应用**发送：消息以应用机器人身份发出，图片能直接内嵌在卡片里
+消息由**企业自建应用**发送：以应用机器人身份发出，图片能直接内嵌在卡片里
 （飞书卡片只接受 `image_key`，把外部图片地址写进 markdown 会被拒收整张卡片，
 实测 `ErrCode 200570 invalid image keys`）。配置流程：
 
@@ -191,13 +188,12 @@ uv run python -m goofishpostman web
 3. 把应用机器人**拉进接收消息的群**（群设置 → 添加机器人 → 选这个应用）；
 4. 应用详情 →「凭证与基础信息」里的 App ID / App Secret 填进网页，点「获取群列表」选目标群，保存。
 
-保存后 `accounts.json` 的 `notify` 里会多出 `chat_id`（形如 `oc_xxx`），发送方式显示为「机器人应用」。
-没填应用凭据、或没选目标群时自动退回自定义机器人的 webhook，老配置照常可用（两套都配了只用应用，
-不会重复发送）。
+保存后 `accounts.json` 的 `notify` 里会有 `app_id` / `app_secret` / `chat_id`（形如 `oc_xxx`），
+状态显示为「机器人应用」。三项缺任意一项都不发送（网页会提示「未配置」）。
 
 发送细节：
-- 接口 `POST /open-apis/im/v1/messages?receive_id_type=chat_id`，`content` 是 **JSON 字符串**，
-  且没有 webhook 那套 `timestamp`/`sign`（签名只属于自定义机器人）；
+- 接口 `POST /open-apis/im/v1/messages?receive_id_type=chat_id`，`content` 是 **JSON 字符串**
+  （自定义机器人 webhook 那套形状与签名已经不在了）；
 - 收到图片消息会先把图片下载下来、调 `POST /open-apis/im/v1/images`（`image_type=message`）
   换成 `image_key`，再放进卡片正文内嵌显示；**同一张图只上传一次**（按地址缓存）；
 - 内嵌成功时正文里那句 `[图片]` 标注与地址行都会被去掉，只留图片本身；
@@ -251,13 +247,10 @@ uv run python -m goofishpostman web --data /path/to/accounts.json # 改用其它
 
 ```dotenv
 COOKIE_STR=复制出来的完整 Cookie 字符串
-# 飞书推送（用于把收到的私信转发出去，可留空）：
-# 推荐填应用凭据 + 目标群；只填 UUID/SECRET 则走自定义机器人 webhook
+# 飞书推送（用于把收到的私信转发出去，可留空）—— 企业自建应用的凭据与目标群
 APP_ID=cli_xxxxxxxx
 APP_SECRET=your_app_secret
 CHAT_ID=oc_xxxxxxxx
-UUID=your_feishu_bot_uuid
-SECRET=your_feishu_bot_secret
 ```
 
 > Cookie 必须是**登录后的状态**，否则无法获取消息。

@@ -10,8 +10,7 @@ from stat import S_IMODE
 from httpx import HTTPError
 from pytest import mark, raises
 
-from goofishpostman.accounts import FeishuNotifier, format_message, is_response_ok
-from goofishpostman.sender import build_text_payload, build_webhook_url, generate_feishu_sign
+from goofishpostman.accounts import FeishuNotifier, format_direction
 from goofishpostman.store import Store
 
 GOOD_COOKIE = 'unb=123456; tracknick=tester; _m_h5_tk=abc_1700000000000'
@@ -137,81 +136,46 @@ def test_display_name_fallback(tmp_dir) -> None:
 
 def test_notify_settings_roundtrip(tmp_dir) -> None:
     store = Store(tmp_dir / 'a.json')
-    store.update_notify(uuid='uuid-1', secret='s3cret')
+    store.update_notify(app_id='cli_1', app_secret='s3cret', chat_id='oc_1')
     assert store.data.notify.configured
 
     reloaded = Store(store.path)
-    assert reloaded.data.notify.uuid == 'uuid-1'
-    assert reloaded.data.notify.secret == 's3cret'
+    assert reloaded.data.notify.app_id == 'cli_1'
+    assert reloaded.data.notify.app_secret == 's3cret'
+    assert reloaded.data.notify.chat_id == 'oc_1'
+
+
+def test_notify_is_not_configured_without_target_chat(tmp_dir) -> None:
+    """只有应用凭据、没选目标群时不算配好（消息发不出去）。"""
+    store = Store(tmp_dir / 'a.json')
+    store.update_notify(app_id='cli_1', app_secret='s3cret')
+    assert store.data.notify.has_app_credentials is True
+    assert store.data.notify.configured is False
 
 
 # ── 飞书推送 ──────────────────────────────────────────────────────────────────
-def test_build_webhook_url_strips_spaces() -> None:
-    assert build_webhook_url(' abc ') == 'https://open.feishu.cn/open-apis/bot/v2/hook/abc'
-
-
-def test_generate_feishu_sign_matches_manual_hmac() -> None:
-    from base64 import b64encode
-    from hashlib import sha256
-    from hmac import new
-
-    expected = b64encode(new(key=b'1700000000\nsecret', digestmod=sha256).digest()).decode()
-    assert generate_feishu_sign('secret', 1700000000) == expected
-
-
-def test_build_text_payload_signs_only_with_secret() -> None:
-    plain = build_text_payload('hi')
-    assert plain == {'msg_type': 'text', 'content': {'text': 'hi'}}
-
-    signed = build_text_payload('hi', 'secret')
-    assert signed['sign'] and signed['timestamp']
-
-
-@mark.parametrize(
-    ('body', 'expected'),
-    [
-        ({'code': 0, 'msg': 'success'}, True),
-        ({'code': 19021, 'msg': 'sign match fail'}, False),
-        ({'StatusCode': 0}, True),
-        ({'StatusCode': 1}, False),
-        ({}, False),
-        ({'msg': 'nonsense'}, False),
-    ],
-)
-def test_is_response_ok(body: dict, expected: bool) -> None:
-    assert is_response_ok(body) is expected
-
-
-def test_format_message_carries_account_and_sender() -> None:
-    """文案不带【】前缀，接收方写成「昵称(账号)」。"""
+def test_format_direction_carries_sender_and_receiver() -> None:
+    """卡片标题的文案：发送方 → 接收方，不带【】前缀。"""
     info = {'send_user_name': '买家小王', 'send_message': '在吗'}
-    text = format_message('小号(xy773249480508)', info, '在吗')
-    assert text == '买家小王 → 小号(xy773249480508)\n在吗'
-    assert '【' not in text and '】' not in text
+    title = format_direction('小号(xy773249480508)', info)
+    assert title == '买家小王 → 小号(xy773249480508)'
+    assert '【' not in title and '】' not in title
 
 
-def test_format_message_marks_direction_for_account_to_account() -> None:
-    """账号之间互发时，也要能看出是谁发给谁的。"""
-    info = {'send_user_name': '大号', 'send_message': '在吗'}
-    other = format_message('小号(222)', info, '在吗')
-    assert other == '大号 → 小号(222)\n在吗'
-    assert other != format_message('大号(111)', info, '在吗')  # 接收方不同，文案不同
-
-
-def test_format_message_prefers_resolved_sender() -> None:
+def test_format_direction_prefers_resolved_sender() -> None:
     """调用方解析出的发送方昵称优先于报文原始值。"""
     info = {'send_user_name': '13993122', 'send_message': 'hi'}
-    assert format_message('小号(222)', info, 'hi', sender='网课学习私人助理') == ('网课学习私人助理 → 小号(222)\nhi')
+    assert format_direction('小号(222)', info, sender='网课学习私人助理') == '网课学习私人助理 → 小号(222)'
 
 
-def test_format_message_falls_back_when_sender_unknown() -> None:
+def test_format_direction_falls_back_when_sender_unknown() -> None:
     info = {'send_user_name': '', 'send_user_id': '12345', 'send_message': 'hi'}
-    assert format_message('小号(222)', info, 'hi') == '12345 → 小号(222)\nhi'
+    assert format_direction('小号(222)', info) == '12345 → 小号(222)'
 
 
-def test_notifier_without_uuid_is_noop() -> None:
+def test_notifier_without_credentials_is_noop() -> None:
     notifier = FeishuNotifier()
-    assert not notifier.configured
+    assert not notifier.can_send_via_app
     # 未配置时不应抛错，也不应发起请求
     run(notifier.send('hello'))
 
@@ -225,7 +189,7 @@ class FakeResponse:
 
 
 class FakeClient:
-    """仿 httpx.AsyncClient 的最小接口。"""
+    """仿 httpx.AsyncClient 的最小接口（只用于「应用接口返回错误码」这类用例）。"""
 
     def __init__(self, body: dict) -> None:
         self.body = body
@@ -234,6 +198,8 @@ class FakeClient:
 
     async def post(self, url: str, **kwargs) -> FakeResponse:
         self.calls.append({'url': url, **kwargs})
+        if url.endswith('/tenant_access_token/internal'):
+            return FakeResponse({'code': 0, 'tenant_access_token': 'tok-1', 'expire': 7200})
         return FakeResponse(self.body)
 
     async def aclose(self) -> None:
@@ -241,17 +207,18 @@ class FakeClient:
 
 
 def test_notifier_raises_on_error_code(monkeypatch) -> None:
-    notifier = FeishuNotifier(uuid='abc', secret='secret')
-    monkeypatch.setattr(notifier, '_client', FakeClient({'code': 19021, 'msg': 'sign match fail'}))
-    with raises(Exception, match='sign match fail'):
+    notifier = FeishuNotifier(app_id='cli_1', app_secret='sec', chat_id='oc_1')
+    monkeypatch.setattr(notifier, '_client', FakeClient({'code': 230002, 'msg': 'bot not in chat'}))
+    with raises(Exception, match='bot not in chat'):
         run(notifier.send('hi'))
 
 
-def test_notifier_posts_card_with_details_code_block(monkeypatch) -> None:
-    """私信走富文本卡片：标题写流向，明细进代码框，正文是普通文本。"""
-    client = FakeClient({'code': 0, 'msg': 'success'})
-    notifier = FeishuNotifier(uuid='abc')
+def test_notifier_card_layout(monkeypatch) -> None:
+    """私信走富文本卡片：标题写流向，明细是多行小号灰字 + 分割线，正文是普通文本。"""
+    client = FakeImageClient()
+    notifier = FeishuNotifier(app_id='cli_1', app_secret='sec', chat_id='oc_1')
     monkeypatch.setattr(notifier, '_client', client)
+    monkeypatch.setattr(notifier, '_media_client', client)
     run(
         notifier.send_account_message(
             '主力号',
@@ -261,15 +228,11 @@ def test_notifier_posts_card_with_details_code_block(monkeypatch) -> None:
         )
     )
 
-    call = client.calls[0]
-    assert call['url'] == 'https://open.feishu.cn/open-apis/bot/v2/hook/abc'
-    payload = call['json']
-    assert payload['msg_type'] == 'interactive'
-    card = payload['card']
+    card = card_of(client.last('/im/v1/messages'))
     assert card['schema'] == '2.0'
     assert card['header']['title']['content'] == '买家 → 主力号'
-    body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
-    # 一个属性一行；内嵌成功后连正文里那句 `[图片]` 标注也去掉（图片就在眼前）
+    body = card['body']
+    # 一个属性一行
     assert body['elements'][0] == {
         'tag': 'markdown',
         'content': '**时间** 09-11 23:55:32\n**商品** 玲娜贝儿钱包',
@@ -280,29 +243,6 @@ def test_notifier_posts_card_with_details_code_block(monkeypatch) -> None:
     assert body['elements'][2] == {'tag': 'markdown', 'content': '在吗\n第一行\n\n第三行'}
 
 
-def test_notifier_card_is_signed_when_secret_given(monkeypatch) -> None:
-    client = FakeClient({'code': 0, 'msg': 'success'})
-    notifier = FeishuNotifier(uuid='abc', secret='s3cret')
-    monkeypatch.setattr(notifier, '_client', client)
-    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, '在吗'))
-
-    payload = client.calls[0]['json']
-    assert payload['msg_type'] == 'interactive'
-    assert payload['timestamp'] and payload['sign']
-
-
-def test_notifier_send_keeps_plain_text(monkeypatch) -> None:
-    """告警之类的纯文本推送不受影响。"""
-    client = FakeClient({'code': 0, 'msg': 'success'})
-    notifier = FeishuNotifier(uuid='abc')
-    monkeypatch.setattr(notifier, '_client', client)
-    run(notifier.send('出问题了'))
-
-    payload = client.calls[0]['json']
-    assert payload['msg_type'] == 'text'
-    assert payload['content']['text'] == '出问题了'
-
-
 # ── 图片内嵌（自建应用上传换 image_key）────────────────────────────────────────
 IMAGE_URL = 'https://img.alicdn.com/imgextra/i4/O1CN01RSAPMB1dNBgdIEGcB_!!53-xy_chat.heic'
 
@@ -310,23 +250,26 @@ IMAGE_URL = 'https://img.alicdn.com/imgextra/i4/O1CN01RSAPMB1dNBgdIEGcB_!!53-xy_
 class FakeDownload:
     """仿 httpx.Response：既能当图片下载结果，也能当列群接口的返回。"""
 
-    def __init__(self, content: bytes, body: dict | None = None) -> None:
+    def __init__(self, content: bytes, body: dict | None = None, status_code: int = 200) -> None:
         self.content = content
         self.body = body or {}
+        self.status_code = status_code
 
     def json(self) -> dict:
         return self.body
 
     def raise_for_status(self) -> None:
-        return None
+        if self.status_code >= 400:
+            raise HTTPError(f'HTTP {self.status_code}')
 
 
 class FakeImageClient:
-    """按 URL 区分「换 token / 传图片 / 发消息 / 发 webhook / 列群」几类请求。"""
+    """按 URL 区分「换 token / 传图片 / 发消息 / 列群」几类请求。"""
 
-    def __init__(self, upload_code: int = 0, message_code: int = 0) -> None:
+    def __init__(self, upload_code: int = 0, message_code: int = 0, download_status: int = 200) -> None:
         self.upload_code = upload_code
         self.message_code = message_code
+        self.download_status = download_status
         self.is_closed = False
         self.calls: list[dict] = []
         self.image = b'\xff\xd8\xff\xe0fake-jpeg'
@@ -335,7 +278,7 @@ class FakeImageClient:
         self.calls.append({'method': 'GET', 'url': url, **kwargs})
         if url.endswith('/im/v1/chats'):
             return FakeDownload(b'', {'code': 0, 'data': {'items': [{'chat_id': 'oc_chat1', 'name': '卖家消息'}]}})
-        return FakeDownload(self.image)
+        return FakeDownload(self.image, status_code=self.download_status)
 
     async def post(self, url: str, **kwargs) -> FakeResponse:
         self.calls.append({'method': 'POST', 'url': url, **kwargs})
@@ -362,15 +305,12 @@ class FakeImageClient:
 
 
 def make_image_notifier(monkeypatch, client: FakeImageClient, *, app: bool = True) -> FeishuNotifier:
-    """假客户端要挂到两个客户端上：webhook 用 _client，下载/上传用 _media_client。
+    """假客户端要挂到两个客户端上：发消息用 _client，下载/上传用 _media_client。
 
     （上传必须走后者：前者带 `Content-Type: application/json` 默认头，飞书会报 234001。）
     """
     notifier = FeishuNotifier(
-        uuid='abc',
-        app_id='cli_1' if app else '',
-        app_secret='appsecret' if app else '',
-        chat_id='oc_chat1' if app else '',
+        app_id='cli_1' if app else '', app_secret='appsecret' if app else '', chat_id='oc_chat1' if app else ''
     )
     monkeypatch.setattr(notifier, '_client', client)
     monkeypatch.setattr(notifier, '_media_client', client)
@@ -382,17 +322,16 @@ def card_of(call: dict) -> dict:
     return loads(call['json']['content'])
 
 
-def test_message_is_sent_by_the_app_when_chat_configured(monkeypatch) -> None:
-    """配了应用 + 目标群：走机器人应用接口发卡片，不再用 webhook。
+def test_message_is_sent_by_the_app(monkeypatch) -> None:
+    """配好应用 + 目标群：走机器人应用接口发卡片。
 
     - 接口：POST /open-apis/im/v1/messages?receive_id_type=chat_id
-    - content 是 JSON 字符串（webhook 那边是对象），也没有 timestamp/sign
+    - content 是 JSON 字符串，也没有 timestamp/sign（签名只属于自定义机器人）
     """
     client = FakeImageClient()
     notifier = make_image_notifier(monkeypatch, client)
     run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, '在吗', details={'时间': '09-12 22:30:00'}))
 
-    assert client.count('/bot/v2/hook/abc') == 0  # 不再用 webhook
     call = client.last('/im/v1/messages')
     assert call['params'] == {'receive_id_type': 'chat_id'}
     assert call['headers']['Authorization'] == 'Bearer tok-1'
@@ -406,8 +345,8 @@ def test_message_is_sent_by_the_app_when_chat_configured(monkeypatch) -> None:
     assert 'sign' not in call['json'] and 'timestamp' not in call['json']
 
 
-def test_plain_text_goes_through_the_app_too(monkeypatch) -> None:
-    """告警文本（send）同样走应用接口。"""
+def test_plain_text_is_sent_as_text_message(monkeypatch) -> None:
+    """告警文本（send）走 text 消息类型。"""
     client = FakeImageClient()
     notifier = make_image_notifier(monkeypatch, client)
     run(notifier.send('出问题了'))
@@ -415,19 +354,15 @@ def test_plain_text_goes_through_the_app_too(monkeypatch) -> None:
     call = client.last('/im/v1/messages')
     assert call['json']['msg_type'] == 'text'
     assert loads(call['json']['content']) == {'text': '出问题了'}
-    assert client.count('/bot/v2/hook/abc') == 0
 
 
-def test_webhook_is_used_when_no_app_configured(monkeypatch) -> None:
-    """没配应用（或没选群）时退回 webhook，老配置照常可用。"""
+def test_nothing_is_sent_without_target_chat(monkeypatch) -> None:
+    """只填了应用凭据、没选目标群时不发送（也不报错）。"""
     client = FakeImageClient()
     notifier = make_image_notifier(monkeypatch, client, app=False)
     run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, '在吗'))
 
-    assert client.count('/im/v1/messages') == 0
-    payload = client.last('/bot/v2/hook/abc')['json']
-    assert payload['msg_type'] == 'interactive'
-    assert payload['card']['header']['title']['content'] == '买家 → 主力号'
+    assert client.calls == []
 
 
 def test_app_send_failure_raises_notify_error(monkeypatch) -> None:
@@ -461,17 +396,17 @@ def test_image_is_inlined_with_the_uploaded_key(monkeypatch) -> None:
     assert '[图片]' not in elements[0]['content'].splitlines()  # 没有单独的标注行
 
 
-def test_image_keeps_link_without_app_credentials(monkeypatch) -> None:
-    """没配自建应用：不上传，正文里保留可点开的地址。"""
-    client = FakeImageClient()
-    notifier = make_image_notifier(monkeypatch, client, app=False)
+def test_image_keeps_link_when_download_not_possible(monkeypatch) -> None:
+    """图片下载不到时（例如地址过期）正文里保留可点开的地址，消息照发。"""
+    client = FakeImageClient(download_status=420)
+    notifier = make_image_notifier(monkeypatch, client)
     run(
         notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
     )
 
     assert client.count('/im/v1/images') == 0
-    body = client.last('/bot/v2/hook/abc')['json']['card']['body']
-    assert body['elements'][0]['content'] == f'[图片]\n[{IMAGE_URL}]({IMAGE_URL})'
+    elements = card_of(client.last('/im/v1/messages'))['body']['elements']
+    assert elements[0]['content'] == f'[图片]\n[{IMAGE_URL}]({IMAGE_URL})'
 
 
 def test_upload_failure_falls_back_to_the_link(monkeypatch) -> None:

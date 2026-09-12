@@ -478,13 +478,17 @@ class Supervisor:
                 logger.debug(f'监听器异常: {e}')
 
     def build_snapshot(self) -> dict[str, Any]:
+        notify = self.store.data.notify
         return {
             'accounts': [runtime.to_public() for runtime in self.runtimes.values()],
             'messages': [m.to_public() for m in self.messages],
             'events': [e.to_public() for e in self.events],
             'notify': {
-                'uuid': self.store.data.notify.uuid,
-                'configured': self.store.data.notify.configured,
-                'enabled': self.store.data.notify.enabled,
+                'app_id': notify.app_id,
+                'chat_id': notify.chat_id,
+                'app_secret_set': bool(notify.app_secret),
+                'has_app_credentials': notify.has_app_credentials,
+                'configured': notify.configured,
+                'enabled': notify.enabled,
             },
         }

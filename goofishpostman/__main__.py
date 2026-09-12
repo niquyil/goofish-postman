@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .accounts import FeishuNotifier
-from .goofish_live import GoofishLive
+from .goofish_live import GoofishLive, extract_message_text
+from .goofish_utils import extract_message_images, extract_message_time
 from .path import ENV_FILE
-from .sender import Sender
 from .store import Store
 from .supervisor import Supervisor
 
@@ -24,22 +24,31 @@ if TYPE_CHECKING:
 
 
 class GoofishPostman(GoofishLive):
-    """单账号模式：把收到的私信转发到飞书（读取 .env）。"""
+    """单账号模式：把收到的私信转发到飞书（读取 .env 里的应用凭据）。"""
 
-    def __init__(self, cookies_str: str, sender: Sender) -> None:
+    def __init__(self, cookies_str: str, notifier: FeishuNotifier) -> None:
         super().__init__(cookies_str)
-        self.sender = sender
+        self.notifier = notifier
 
     async def handle_message(self, message: MessageInfo, websocket: ClientConnection) -> None:
-        await self.sender.send_message(
-            message=message['send_message'], title=f'{message["send_user_name"]} → {self.username}'
+        details = {}
+        created = extract_message_time(message['raw'])
+        if created:
+            details['时间'] = created
+        await self.notifier.send_card(
+            title=f'{message["send_user_name"]} → {self.username}',
+            content=extract_message_text(message),
+            details=details,
+            images=extract_message_images(message['raw']),
         )
 
 
 def run_single() -> None:
     load_dotenv(ENV_FILE)
-    sender = Sender(uuid=getenv('UUID'), secret=getenv('SECRET'))
-    run(GoofishPostman(cookies_str=getenv('COOKIE_STR'), sender=sender).main())
+    notifier = FeishuNotifier(
+        app_id=getenv('APP_ID', ''), app_secret=getenv('APP_SECRET', ''), chat_id=getenv('CHAT_ID', '')
+    )
+    run(GoofishPostman(cookies_str=getenv('COOKIE_STR'), notifier=notifier).main())
 
 
 async def run_web(store: Store, host: str = '', port: int = 0) -> None:
@@ -47,7 +56,9 @@ async def run_web(store: Store, host: str = '', port: int = 0) -> None:
     from .web import serve
 
     notify = store.data.notify
-    supervisor = Supervisor(store, FeishuNotifier(uuid=notify.uuid, secret=notify.secret))
+    supervisor = Supervisor(
+        store, FeishuNotifier(app_id=notify.app_id, app_secret=notify.app_secret, chat_id=notify.chat_id)
+    )
     await supervisor.start_enabled()
     await serve(store, supervisor, host=host, port=port)
 
@@ -78,9 +89,9 @@ def main(argv: list[str] | None = None) -> int:
         host, port = args.host or web_settings.host, args.port or web_settings.port
         logger.info(f'配置文件: {store.path}')
         if store.data.notify.configured:
-            logger.info('飞书推送已启用')
+            logger.info(f'飞书推送已启用（应用 {store.data.notify.app_id} → 群 {store.data.notify.chat_id}）')
         else:
-            logger.warning('尚未配置飞书机器人，消息只会在界面里显示')
+            logger.warning('尚未配置飞书推送（应用凭据或目标群缺失），消息只会在界面里显示')
         try:
             run(run_web(store, host=host, port=port))
         except KeyboardInterrupt:

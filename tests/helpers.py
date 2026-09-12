@@ -32,8 +32,8 @@ class RecordingNotifier(FeishuNotifier):
     明细、配色与图片地址（Supervisor 会给卡片附上时间/商品名与图片 url）。
     """
 
-    def __init__(self, app_id: str = '', app_secret: str = '') -> None:
-        super().__init__(uuid='fake', app_id=app_id, app_secret=app_secret)
+    def __init__(self, app_id: str = '', app_secret: str = '', chat_id: str = '') -> None:
+        super().__init__(app_id=app_id, app_secret=app_secret, chat_id=chat_id)
         self.sent: list[str] = []
         self.cards: list[tuple[str, str]] = []
         self.card_payloads: list[dict] = []

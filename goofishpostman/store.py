@@ -138,39 +138,26 @@ class WebSettings(BaseModel):
 
 
 class NotifySettings(BaseModel):
-    """飞书推送配置。
+    """飞书推送配置（企业自建应用）。
 
-    推荐用「企业自建应用」发消息：填 app_id / app_secret / chat_id（机器人所在的群），
-    图片也能直接内嵌。三者缺任意一个就退回自定义机器人的 webhook（uuid / secret）。
+    消息由应用机器人发到 `chat_id` 指定的群；`app_id`/`app_secret` 另外还用于上传图片
+    （换 image_key 才能把图片内嵌进卡片）和列群。三项缺任意一项都不发送。
     """
 
-    uuid: str = ''
-    secret: str = ''
     app_id: str = ''
     app_secret: str = ''
-    # 自建应用发送目标（群 id，形如 oc_xxx）；机器人必须已经在这个群里
+    # 发送目标（群 id，形如 oc_xxx）；机器人必须已经在这个群里
     chat_id: str = ''
     enabled: bool = True
 
     @property
-    def configured(self) -> bool:
-        return bool(self.uuid.strip())
-
-    @property
-    def can_upload_images(self) -> bool:
+    def has_app_credentials(self) -> bool:
         return bool(self.app_id.strip() and self.app_secret.strip())
 
     @property
-    def can_send_via_app(self) -> bool:
-        """三个都填了才走机器人应用，否则退回 webhook。"""
-        return bool(self.can_upload_images and self.chat_id.strip())
-
-    @property
-    def transport(self) -> str:
-        """当前生效的发送方式，界面上用来提示。"""
-        if self.can_send_via_app:
-            return 'app'
-        return 'webhook' if self.configured else 'none'
+    def configured(self) -> bool:
+        """能发消息的前提：应用凭据 + 目标群。"""
+        return bool(self.has_app_credentials and self.chat_id.strip())
 
 
 class StoreData(BaseModel):

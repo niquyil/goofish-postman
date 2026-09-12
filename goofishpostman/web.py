@@ -142,8 +142,6 @@ class AccountPatch(BaseModel):
 
 
 class NotifyBody(BaseModel):
-    uuid: str | None = None
-    secret: str | None = None
     app_id: str | None = None
     app_secret: str | None = None
     chat_id: str | None = None
@@ -251,16 +249,12 @@ class WebApp:
                 'messages': [record.to_public() for record in reversed(self.supervisor.messages)],
                 'events': [event.to_public() for event in reversed(self.supervisor.events)],
                 'notify': {
-                    'uuid': self.store.data.notify.uuid,
-                    'configured': self.store.data.notify.configured,
-                    'enabled': self.store.data.notify.enabled,
-                    'secret_set': bool(self.store.data.notify.secret),
                     'app_id': self.store.data.notify.app_id,
                     'app_secret_set': bool(self.store.data.notify.app_secret),
                     'chat_id': self.store.data.notify.chat_id,
-                    'can_upload_images': self.store.data.notify.can_upload_images,
-                    'can_send_via_app': self.store.data.notify.can_send_via_app,
-                    'transport': self.store.data.notify.transport,
+                    'has_app_credentials': self.store.data.notify.has_app_credentials,
+                    'configured': self.store.data.notify.configured,
+                    'enabled': self.store.data.notify.enabled,
                 },
             },
         )
@@ -372,14 +366,11 @@ class WebApp:
         return ChineseJSONResponse(
             {
                 'ok': True,
-                'uuid': notify.uuid,
-                'secret_set': bool(notify.secret),
                 'app_id': notify.app_id,
                 'app_secret_set': bool(notify.app_secret),
                 'chat_id': notify.chat_id,
-                'can_upload_images': notify.can_upload_images,
-                'can_send_via_app': notify.can_send_via_app,
-                'transport': notify.transport,
+                'has_app_credentials': notify.has_app_credentials,
+                'configured': notify.configured,
                 'enabled': notify.enabled,
             }
         )
@@ -387,7 +378,7 @@ class WebApp:
     async def api_list_notify_chats(self) -> Response:
         """用自建应用列出机器人所在的群（界面上挑一个当推送目标）。"""
         notify = self.store.data.notify
-        if not notify.can_upload_images:
+        if not notify.has_app_credentials:
             return ChineseJSONResponse({'ok': False, 'error': '先填应用 ID 与密钥'}, status_code=400)
         notifier = FeishuNotifier(app_id=notify.app_id, app_secret=notify.app_secret)
         try:
@@ -404,20 +395,18 @@ class WebApp:
         # 重建推送器，让新配置立即生效
         await self.supervisor.notifier.close()
         self.supervisor.notifier = FeishuNotifier(
-            uuid=notify.uuid,
-            secret=notify.secret,
-            app_id=notify.app_id,
-            app_secret=notify.app_secret,
-            chat_id=notify.chat_id,
+            app_id=notify.app_id, app_secret=notify.app_secret, chat_id=notify.chat_id
         )
-        self.supervisor.publish_event('info', '', f'飞书推送配置已更新（发送方式：{notify.transport}）')
+        self.supervisor.publish_event(
+            'info', '', '飞书推送配置已更新' if notify.configured else '飞书推送配置已更新（还不完整，补齐后才会发送）'
+        )
         return ChineseJSONResponse(
             {
                 'ok': True,
-                'uuid': notify.uuid,
-                'can_upload_images': notify.can_upload_images,
-                'can_send_via_app': notify.can_send_via_app,
-                'transport': notify.transport,
+                'app_id': notify.app_id,
+                'chat_id': notify.chat_id,
+                'has_app_credentials': notify.has_app_credentials,
+                'configured': notify.configured,
                 'enabled': notify.enabled,
             }
         )

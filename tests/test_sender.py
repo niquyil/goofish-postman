@@ -1,91 +1,15 @@
-"""飞书推送的回归测试（不联网）。"""
+"""飞书卡片组装的回归测试（不联网；发送逻辑在 test_store 里）。"""
 
 from __future__ import annotations
 
-from asyncio import run
-from base64 import b64encode
-from hashlib import sha256
-from hmac import new
-from typing import Self
-from unittest.mock import patch
-
 from goofishpostman.sender import (
     DEFAULT_HEADER_COLOR,
-    FEISHU_HEADERS,
     HEADER_COLORS,
-    Sender,
-    build_card_payload,
+    build_card,
+    build_text_message,
     linkify_urls,
     pick_header_color,
 )
-
-
-class FakeResponse:
-    def json(self) -> dict:
-        return {'code': 0, 'msg': 'success'}
-
-
-class FakeClient:
-    """记录 AsyncClient 的构造参数与 post 调用。"""
-
-    last: FakeClient | None = None
-
-    def __init__(self, **kwargs) -> None:
-        self.init_kwargs = kwargs
-        self.post_kwargs: dict = {}
-        FakeClient.last = self
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *args) -> None:
-        return None
-
-    async def post(self, url: str, **kwargs) -> FakeResponse:
-        self.post_kwargs = {'url': url, **kwargs}
-        return FakeResponse()
-
-
-def test_payload_without_secret() -> None:
-    assert Sender(uuid='u').build_payload(message='hi') == {'msg_type': 'text', 'content': {'text': 'hi'}}
-
-
-def test_payload_with_secret_is_signed() -> None:
-    payload = Sender(uuid='u', secret='s').build_payload(message='hi')
-    timestamp = int(payload['timestamp'])
-    expected = b64encode(new(key=f'{timestamp}\ns'.encode(), digestmod=sha256).digest()).decode()
-    assert payload['sign'] == expected
-
-
-def test_send_message_uses_headers_and_payload() -> None:
-    """回归：send_message 里引用的 headers 必须真实存在（曾被重构删掉过）。"""
-    sender = Sender(uuid='uuid-1', secret='sec')
-
-    with patch('goofishpostman.sender.AsyncClient', FakeClient):
-        run(sender.send_message(message='你好'))
-
-    client = FakeClient.last
-    assert client is not None
-    assert client.init_kwargs['headers'] == FEISHU_HEADERS
-    assert client.post_kwargs['url'] == 'https://open.feishu.cn/open-apis/bot/v2/hook/uuid-1'
-    body = client.post_kwargs['json']
-    assert body['msg_type'] == 'text'
-    assert body['content']['text'] == '你好'
-    assert body['sign']  # 配了 secret 就必须带签名
-
-
-def test_send_message_with_title_uses_card() -> None:
-    """带 title 时发富文本卡片：标题写流向，正文是普通文本，签名照旧。"""
-    sender = Sender(uuid='uuid-1', secret='sec')
-
-    with patch('goofishpostman.sender.AsyncClient', FakeClient):
-        run(sender.send_message(message='在吗', title='买家 → 主力号'))
-
-    body = FakeClient.last.post_kwargs['json']
-    assert body['msg_type'] == 'interactive'
-    assert body['card']['header']['title']['content'] == '买家 → 主力号'
-    assert body['card']['body']['elements'] == [{'tag': 'markdown', 'content': '在吗'}]
-    assert body['sign']
 
 
 def test_card_details_use_small_text_and_a_divider() -> None:
@@ -94,8 +18,8 @@ def test_card_details_use_small_text_and_a_divider() -> None:
     代码框会被飞书多渲染一行「N 行代码」，那行没有意义；小字 + 分割线同样能把
     「消息属性」和「正文」分开，而且更干净。
     """
-    payload = build_card_payload('买家 → 主力号', '在吗', details={'时间': '09-11 23:55', '商品': '玲娜贝儿钱包'})
-    elements = payload['card']['body']['elements']
+    card = build_card('买家 → 主力号', '在吗', details={'时间': '09-11 23:55', '商品': '玲娜贝儿钱包'})
+    elements = card['body']['elements']
     assert elements[0] == {
         'tag': 'markdown',
         'content': '**时间** 09-11 23:55\n**商品** 玲娜贝儿钱包',
@@ -110,12 +34,23 @@ def test_card_omits_empty_details() -> None:
 
     新会话第一次收到消息时可能还没学到商品标题，这时只显示时间。
     """
-    payload = build_card_payload('买家 → 主力号', '在吗', details={'时间': '', '商品': ''})
-    assert payload['card']['body']['elements'] == [{'tag': 'markdown', 'content': '在吗'}]
-    assert len(build_card_payload('买家 → 主力号', '在吗')['card']['body']['elements']) == 1
+    card = build_card('买家 → 主力号', '在吗', details={'时间': '', '商品': ''})
+    assert card['body']['elements'] == [{'tag': 'markdown', 'content': '在吗'}]
+    assert len(build_card('买家 → 主力号', '在吗')['body']['elements']) == 1
 
-    only_item = build_card_payload('买家 → 主力号', '在吗', details={'时间': '', '商品': '玲娜贝儿钱包'})
-    assert only_item['card']['body']['elements'][0]['content'] == '**商品** 玲娜贝儿钱包'
+    only_item = build_card('买家 → 主力号', '在吗', details={'时间': '', '商品': '玲娜贝儿钱包'})
+    assert only_item['body']['elements'][0]['content'] == '**商品** 玲娜贝儿钱包'
+
+
+def test_card_is_a_schema_2_card_with_the_title_as_header() -> None:
+    card = build_card('买家 → 主力号', '在吗')
+    assert card['schema'] == '2.0'
+    assert card['header']['title'] == {'tag': 'plain_text', 'content': '买家 → 主力号'}
+    assert card['config'] == {'update_multi': True}
+
+
+def test_text_message_shape() -> None:
+    assert build_text_message('出问题了') == {'text': '出问题了'}
 
 
 def test_header_color_is_stable_and_from_the_palette() -> None:
@@ -123,14 +58,14 @@ def test_header_color_is_stable_and_from_the_palette() -> None:
     assert pick_header_color('acct-1') == pick_header_color('acct-1')
     assert pick_header_color('acct-1') in HEADER_COLORS
     assert pick_header_color('') == DEFAULT_HEADER_COLOR
-    assert build_card_payload('t', 'c', color='green')['card']['header']['template'] == 'green'
+    assert build_card('t', 'c', color='green')['header']['template'] == 'green'
 
 
 def test_urls_in_the_body_become_clickable_links() -> None:
     """图片/视频消息的地址要能在飞书里点开（正文里的 http(s) 转成 markdown 链接）。"""
     url = 'https://img.alicdn.com/imgextra/i4/O1CN01RSAPMB1dNBgdIEGcB_!!53-xy_chat.heic'
-    payload = build_card_payload('买家 → 主力号', f'[图片]\n{url}')
-    assert payload['card']['body']['elements'][0]['content'] == f'[图片]\n[{url}]({url})'
+    card = build_card('买家 → 主力号', f'[图片]\n{url}')
+    assert card['body']['elements'][0]['content'] == f'[图片]\n[{url}]({url})'
 
 
 def test_app_deep_links_are_left_as_plain_text() -> None:

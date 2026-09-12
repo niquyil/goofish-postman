@@ -173,39 +173,38 @@ def test_notify_roundtrip_never_returns_secret(tmp_dir) -> None:
     harness = build_harness(tmp_dir)
     assert harness.client.get('/api/notify').json() == {
         'ok': True,
-        'uuid': '',
-        'secret_set': False,
         'app_id': '',
         'app_secret_set': False,
         'chat_id': '',
-        'can_upload_images': False,
-        'can_send_via_app': False,
-        'transport': 'none',
+        'has_app_credentials': False,
+        'configured': False,
         'enabled': True,
     }
 
     response = harness.client.put(
-        '/api/notify',
-        json={'uuid': 'uuid-1', 'secret': 'topsecret', 'app_id': 'cli_1', 'app_secret': 'appsecret', 'enabled': True},
+        '/api/notify', json={'app_id': 'cli_1', 'app_secret': 'appsecret', 'chat_id': 'oc_1', 'enabled': True}
     )
     assert response.status_code == 200
 
     body = harness.client.get('/api/notify').json()
-    assert body['uuid'] == 'uuid-1'
-    assert body['secret_set'] is True
     assert body['app_id'] == 'cli_1'
     assert body['app_secret_set'] is True
-    assert body['can_upload_images'] is True  # 两个都填了才敢说能内嵌图片
-    # 还没选目标群，所以仍然走 webhook
-    assert body['can_send_via_app'] is False
-    assert body['transport'] == 'webhook'
-    assert 'topsecret' not in str(body)
-    assert 'appsecret' not in str(body)
-    assert harness.store.data.notify.secret == 'topsecret'
+    assert body['chat_id'] == 'oc_1'
+    assert body['has_app_credentials'] is True  # 两个都填了才敢说能内嵌图片
+    assert body['configured'] is True  # 再加上目标群才真的能发
+    assert 'appsecret' not in str(body)  # 密钥永远不回传
     assert harness.store.data.notify.app_secret == 'appsecret'
     # 推送器已按新配置重建
-    assert harness.supervisor.notifier.uuid == 'uuid-1'
-    assert harness.supervisor.notifier.can_upload_images is True
+    assert harness.supervisor.notifier.app_id == 'cli_1'
+    assert harness.supervisor.notifier.can_send_via_app is True
+
+
+def test_notify_requires_app_credentials_for_chat_list(tmp_dir) -> None:
+    """还没填应用凭据时「获取群列表」应直接提示，而不是发请求。"""
+    harness = build_harness(tmp_dir)
+    response = harness.client.get('/api/notify/chats')
+    assert response.status_code == 400
+    assert '应用' in response.json()['error']
 
 
 # ── 鉴权 ──────────────────────────────────────────────────────────────────────
@@ -241,7 +240,7 @@ def test_index_renders_everything_server_side(tmp_dir) -> None:
     """首屏由 Jinja2 渲染：账号、消息、事件、飞书配置都应直接出现在 HTML 里。"""
     harness = build_harness(tmp_dir)
     account = harness.store.add(name='主力号', cookie=GOOD_COOKIE)
-    harness.store.update_notify(uuid='uuid-1', secret='s3cret')
+    harness.store.update_notify(app_id='cli_1', app_secret='s3cret', chat_id='oc_1')
     harness.supervisor.sync_runtimes()
 
     runtime = harness.supervisor.runtimes[account.id]
@@ -263,8 +262,8 @@ def test_index_renders_everything_server_side(tmp_dir) -> None:
     assert 'Cookie *' in html  # 脱敏提示
     assert '在吗' in html  # 消息
     assert '扫码登录成功' in html  # 事件
-    assert 'value="uuid-1"' in html  # 飞书配置回填
-    assert 'Webhook' in html  # 只配了 webhook 时发送方式就是它
+    assert 'value="cli_1"' in html  # 飞书配置回填
+    assert '机器人应用' in html  # 配置齐全时的状态
     assert '还没有账号' not in html  # 有账号就不显示空态
     assert '[[' not in html and ']]' not in html  # 定界符已全部解析
 

@@ -445,6 +445,55 @@ def test_duration_is_converted_to_milliseconds() -> None:
     assert to_milliseconds(-3) == 0
 
 
+def mp4_box(kind: bytes, payload: bytes) -> bytes:
+    return (len(payload) + 8).to_bytes(4, 'big') + kind + payload
+
+
+def mp4_with_duration(duration: int, timescale: int = 1000, version: int = 0) -> bytes:
+    """拼一个最小的 MP4：ftyp + moov(mvhd)，只保留算时长需要的字段。"""
+    if version == 1:
+        payload = (
+            bytes([1, 0, 0, 0])
+            + (0).to_bytes(8, 'big') * 2
+            + timescale.to_bytes(4, 'big')
+            + duration.to_bytes(8, 'big')
+        )
+    else:
+        payload = (
+            bytes([0, 0, 0, 0])
+            + (0).to_bytes(4, 'big') * 2
+            + timescale.to_bytes(4, 'big')
+            + duration.to_bytes(4, 'big')
+        )
+    ftyp = mp4_box(b'ftyp', b'isom' + (512).to_bytes(4, 'big') + b'isomiso2mp41')
+    return ftyp + mp4_box(b'moov', mp4_box(b'mvhd', payload))
+
+
+def test_mp4_duration_is_read_from_the_file() -> None:
+    """闲鱼报文里的视频时长一直是 0（卡片显示 00:00），只能从 mp4 的 moov/mvhd 里自己读。
+
+    真实样本（用户实测 19 秒的那条）解析出来是 19412 ms，与播放器一致。
+    """
+    from goofishpostman.goofish_utils import extract_mp4_duration_ms
+
+    assert extract_mp4_duration_ms(mp4_with_duration(19412, timescale=1000)) == 19412
+    # 64 位时长的 mvhd（timescale=90000，1747080/90000 = 19.412 秒）
+    assert extract_mp4_duration_ms(mp4_with_duration(1747080, timescale=90000, version=1)) == 19412
+    # moov 在 mdat 之后的情形（非 faststart 的 mp4 很常见）
+    mdat = mp4_box(b'mdat', b'\x00' * 32)
+    assert extract_mp4_duration_ms(mdat + mp4_with_duration(5000)) == 5000
+
+
+def test_mp4_duration_falls_back_to_zero() -> None:
+    """不是 mp4、或者结构对不上时返回 0（卡片显示 00:00，和以前一样，不会报错）。"""
+    from goofishpostman.goofish_utils import extract_mp4_duration_ms
+
+    assert extract_mp4_duration_ms(b'') == 0
+    assert extract_mp4_duration_ms(b'not a video at all') == 0
+    assert extract_mp4_duration_ms(mp4_box(b'ftyp', b'isom') + mp4_box(b'moov', b'\x00' * 8)) == 0
+    assert extract_mp4_duration_ms(mp4_with_duration(19412, timescale=0)) == 0  # timescale 为 0 没法算
+
+
 def test_image_content_is_read_from_history_shape_too() -> None:
     """同一份正文，推送与历史记录的包装层不同，两边都要能取到。"""
     from goofishpostman.goofish_utils import describe_message_content, extract_message_content, format_content_text

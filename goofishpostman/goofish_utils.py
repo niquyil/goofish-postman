@@ -602,11 +602,64 @@ def to_milliseconds(duration: int) -> int:
 
     闲鱼这个字段的单位没有权威文档：实测几条真实视频给的都是 0，没有可参考的样本。
     数值很小（<1000）时按秒处理，否则认为本来就是毫秒 —— 这个字段只影响飞书界面上
-    显示的那个时长，猜错的代价很小。
+    显示的那个时长，猜错的代价很小。视频还会兜一层 extract_mp4_duration_ms。
     """
     if duration <= 0:
         return 0
     return duration * 1000 if duration < 1000 else duration
+
+
+def extract_mp4_duration_ms(data: bytes) -> int:
+    """从 MP4 文件里读出时长（毫秒），读不到返回 0。
+
+    闲鱼报文里的 video.duration 实测一直是 0（飞书卡片因此显示 00:00），
+    所以时长只能自己从文件里读：MP4 是一层层 box（`[长度4][类型4][内容]`），
+    顶层找 `moov`、里面找 `mvhd`，拿 timescale 与 duration 算一下即可，不需要额外依赖。
+    """
+    moov = _find_box(data, 0, len(data), b'moov')
+    if moov is None:
+        return 0
+    mvhd = _find_box(data, moov[0], moov[1], b'mvhd')
+    if mvhd is None:
+        return 0
+    start, end = mvhd
+    if start + 4 > end:
+        return 0
+    version = data[start]
+    # mvhd 内容：version(1) + flags(3) + 创建/修改时间 + timescale(4) + duration
+    if version == 1:
+        timescale_at, duration_at, duration_size = start + 4 + 16, start + 4 + 20, 8
+    else:
+        timescale_at, duration_at, duration_size = start + 4 + 8, start + 4 + 12, 4
+    if duration_at + duration_size > end:
+        return 0
+    timescale = int.from_bytes(data[timescale_at : timescale_at + 4], 'big')
+    duration = int.from_bytes(data[duration_at : duration_at + duration_size], 'big')
+    if not timescale:
+        return 0
+    return round(duration / timescale * 1000)
+
+
+def _find_box(data: bytes, start: int, end: int, wanted: bytes) -> tuple[int, int] | None:
+    """在 [start, end) 这一段里找指定类型的 box，返回它内容的起止位置。"""
+    offset = start
+    while offset + 8 <= end:
+        size = int.from_bytes(data[offset : offset + 4], 'big')
+        kind = data[offset + 4 : offset + 8]
+        header = 8
+        if size == 1:  # 64 位长度
+            if offset + 16 > end:
+                return None
+            size = int.from_bytes(data[offset + 8 : offset + 16], 'big')
+            header = 16
+        elif size == 0:  # 一直到文件末尾
+            size = end - offset
+        if size < header:
+            return None
+        if kind == wanted:
+            return offset + header, offset + size
+        offset += size
+    return None
 
 
 def is_silent_message(payload: dict) -> bool:

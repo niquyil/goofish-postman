@@ -20,7 +20,7 @@ from anyio import to_thread
 from httpx import AsyncClient, HTTPError, TimeoutException
 from loguru import logger
 
-from .goofish_utils import CONTENT_TYPE_LABELS, to_milliseconds
+from .goofish_utils import CONTENT_TYPE_LABELS, extract_mp4_duration_ms, to_milliseconds
 from .sender import DEFAULT_HEADER_COLOR, build_card, build_text_message, content_json
 
 if TYPE_CHECKING:
@@ -228,6 +228,8 @@ class FeishuNotifier:
                 return None
             file_type, file_name = 'opus', _MEDIA_FILENAMES['audio']
         else:
+            # 闲鱼报文里的时长实测一直是 0（卡片会显示 00:00），所以从 mp4 里自己读一个
+            duration = duration or extract_mp4_duration_ms(data)
             file_type, file_name = 'mp4', _MEDIA_FILENAMES['video']
         try:
             file_key = await self.upload_file(data, file_type=file_type, file_name=file_name, duration=duration)

@@ -525,6 +525,19 @@ def test_media_upload_failure_falls_back_to_the_link(monkeypatch) -> None:
     assert 'enable_forward' not in card['config']
 
 
+def test_video_duration_is_read_from_the_file_when_payload_says_zero(monkeypatch) -> None:
+    """报文里 duration=0（真实情况）时，从 mp4 里读时长，卡片才不会显示 00:00。"""
+    from test_utils import mp4_with_duration
+
+    lark = FakeLarkClient()
+    downloads = FakeDownloadClient(image=mp4_with_duration(19412, timescale=1000))
+    notifier = make_notifier(monkeypatch, lark, downloads)
+    media = {'kind': 'video', 'url': VIDEO_URL, 'cover': '', 'duration': 0}
+    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+
+    assert lark.last('file').body.duration == 19412
+
+
 def test_same_video_is_uploaded_once(monkeypatch) -> None:
     """同一条消息重复下发（实测会重复 6 次）时视频只上传一次。"""
     lark = FakeLarkClient()

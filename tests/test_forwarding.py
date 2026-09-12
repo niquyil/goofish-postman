@@ -11,7 +11,18 @@ from goofishpostman.sender import pick_header_color
 from goofishpostman.store import Store
 from goofishpostman.supervisor import Supervisor
 
-from fixtures import AROUSE_PAYLOAD, PUSH_MESSAGE_PAYLOAD, SESSION_ID, encrypted_record, plain_record, push_frame
+from fixtures import (
+    AROUSE_PAYLOAD,
+    IMAGE_CONTENT,
+    IMAGE_URL,
+    PUSH_MESSAGE_PAYLOAD,
+    SESSION_ID,
+    TRADE_CARD_CONTENT,
+    encrypted_record,
+    plain_record,
+    push_frame,
+    push_payload_with_content,
+)
 from helpers import RECEIVER_COOKIE, RecordingNotifier
 
 # cookie 里的 unb/昵称要与真实报文一致，否则归属判断与展示名会对不上
@@ -142,6 +153,28 @@ def test_session_title_cache_is_bounded(tmp_dir) -> None:
     for index in range(_MAX_SESSION_TITLES + 20):
         supervisor._remember_session_title(f'sid-{index}', f'标题{index}')
     assert len(supervisor._session_titles) == _MAX_SESSION_TITLES
+
+
+def test_image_message_is_forwarded_with_its_url(tmp_dir, stub_decrypt) -> None:
+    """非文本消息也要转发，并且把图片地址带出去（网页消息流与卡片正文同一份文案）。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(supervisor, push_frame(encrypted_record(push_payload_with_content(IMAGE_CONTENT, '[图片]'))))
+
+    card = notifier.card_payloads[0]
+    assert card['content'] == f'[图片]\n{IMAGE_URL}'
+    assert supervisor.messages[-1].text == f'[图片]\n{IMAGE_URL}'
+
+
+def test_trade_card_message_is_forwarded_with_its_text(tmp_dir, stub_decrypt) -> None:
+    """交易卡片要给标题与说明，而不是只转发报文里那句 `[提醒开通微信收款]`。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(
+        supervisor, push_frame(encrypted_record(push_payload_with_content(TRADE_CARD_CONTENT, '[提醒开通微信收款]')))
+    )
+
+    text = notifier.card_payloads[0]['content']
+    assert text.startswith('[交易卡片]\n我已修改价格，等待你付款')
+    assert '去付款：fleamarket://order_detail?id=1&role=buyer' in text
 
 
 def test_extract_message_uid_extracted_from_real_payload() -> None:

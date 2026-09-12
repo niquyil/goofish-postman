@@ -186,3 +186,117 @@ HISTORY_MODEL = {
     },
     'msgStatus': 1,
 }
+
+# ── 各类型正文（content JSON）────────────────────────────────────────────────
+# 形状照抄 2026-09 真实抓包（同一个账号 19 个会话、248 条历史里出现过的全部类型），
+# 只有长链接做了保留原样的处理：它们本来就是公开的图片/视频地址。
+IMAGE_URL = 'https://img.alicdn.com/imgextra/i4/3123133723/O1CN01RSAPMB1dNBgdIEGcB_!!3123133723-53-xy_chat.heic'
+VIDEO_URL = 'http://wantu-xm4-xianyu-video-hz.oss-cn-hangzhou.aliyuncs.com/aus/xianyu_imvod_private/1700813367/5c13a4e.mp4?video_id=560521825334'
+
+# contentType=2 图片：pics 可以有多张
+IMAGE_CONTENT = {
+    'atUsers': [],
+    'contentType': 2,
+    'image': {'pics': [{'height': 1440, 'type': 0, 'url': IMAGE_URL, 'width': 1080}]},
+}
+
+# contentType=3 语音：形状来自 types.AudioMessage（真实会话里暂时没出现过）
+AUDIO_CONTENT = {'contentType': 3, 'audio': {'url': 'https://example.com/voice.amr', 'duration': 8}}
+
+# contentType=4 视频：url 是播放地址，snapshot 是封面图
+VIDEO_CONTENT = {
+    'atUsers': [],
+    'contentType': 4,
+    'video': {'duration': 0, 'height': 1440, 'snapshot': f'{VIDEO_URL}.jpg', 'url': VIDEO_URL, 'width': 1080},
+}
+
+# contentType=6 文本卡片：title/content 里是带 HTML 的富文本
+TEXT_CARD_CONTENT = {
+    'contentType': 6,
+    'textCard': {
+        'title': '<strong><font color="#000000" fontFamily="xianyubeta">物流已签收</font></strong>',
+        'content': (
+            '<strong><font color="#999999">3天后自动确认收货，如有问题可延长收货 '
+            '<a size=13 href="fleamarket://order_detail?id=4502273115115018200&role=Buyer" target="_blank">'
+            '查看详情</a></font></strong>'
+        ),
+    },
+}
+
+# contentType=14 提示条：纯平台提示（没有 href 的 <a> 只留文字）
+TIP_CONTENT = {
+    'contentType': 14,
+    'tip': {
+        'argInfo': {'arg1': 'Button-MsgTips', 'args': {'sessionId': SESSION_ID}},
+        'tip': ' 想要卖家更快回复？平台帮你催促，点击<a size=13 data-intent=\'{"intentType":1}\'>“叮一下”</a>',
+    },
+}
+
+# contentType=26 交易卡片：标题 + 说明 + 按钮
+TRADE_CARD_CONTENT = {
+    'contentType': 26,
+    'dxCard': {
+        'item': {
+            'main': {
+                'exContent': {
+                    'desc': '请确认价格与协商一致，并在24小时内付款',
+                    'title': '我已修改价格，等待你付款',
+                    'button': {'text': '去付款', 'targetUrl': 'fleamarket://order_detail?id=1&role=buyer'},
+                },
+                'targetUrl': '',
+            }
+        },
+        'template': {'name': 'idlefish_message_trade_chat_card'},
+    },
+}
+
+# contentType=25 平台消息卡：只有 subTitle，没有 desc
+PLATFORM_CARD_CONTENT = {
+    'contentType': 25,
+    'dxCard': {
+        'item': {
+            'main': {
+                'exContent': {
+                    'subTitle': '交易体验还满意吗？评价帮更多人选购',
+                    'title': '快给ta一个评价吧～',
+                    'button': {'text': '去评价', 'targetUrl': 'https://h5.m.goofish.com/wow/moyu/evaluate'},
+                },
+                'targetUrl': '',
+            }
+        }
+    },
+}
+
+
+def push_payload_with_content(content: dict, reminder_content: str = '', message_id: str = MESSAGE_ID) -> dict:
+    """把一条正文 JSON 包成真实推送形态的 payload（比历史记录多一层 ['1']['1']）。
+
+    `message_id` 是去重用的 id：同一条消息重复下发时它保持不变，所以要造多条不同
+    消息的用例必须显式传不同的值，否则后一条会被当成重复而不转发。
+    """
+    return {
+        '1': {
+            '1': {
+                '1': {'1': '2221114099805@goofish'},
+                '2': f'{SESSION_ID}@goofish',
+                '3': '4295798983499.PNM',
+                '4': f'{RECEIVER_UNB}@goofish',
+                '5': '1789142132646',
+                '6': {'1': 101, '3': {'1': '', '2': reminder_content, '3': '', '4': 1, '5': dumps(content)}},
+                '7': 2,
+                '8': 1,
+                '9': 0,
+                '10': {
+                    'bizTag': f'{{"sourceId":"S:1","messageId":"{message_id}"}}',
+                    'extJson': f'{{"messageId":"{message_id}","tag":"u"}}',
+                    'reminderContent': reminder_content,
+                    'reminderTitle': '一站式学习助手',
+                    'senderUserId': '2221114099805',
+                    'senderUserType': '0',
+                    'sessionType': '1',
+                },
+                '12': 1,
+            },
+            '3': {'needPush': 'true'},
+        }
+    }

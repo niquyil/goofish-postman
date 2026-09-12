@@ -2,6 +2,7 @@ from base64 import b64encode
 from functools import cached_property
 from hashlib import sha256
 from hmac import new
+from re import compile as compile_pattern
 from time import time
 from zlib import crc32
 
@@ -61,6 +62,20 @@ def format_details(details: dict[str, str]) -> str:
     return '\n'.join(f'{key}：{value}' for key, value in details.items() if value)
 
 
+# 正文里要变成可点链接的地址（http/https）。`fleamarket://` 这类 App 深链不转：
+# 飞书不认这个协议，转成 markdown 链接会变成死链，原样留文本还能复制到手机上打开。
+_URL_PATTERN = compile_pattern(r'https?://[^\s<>()\[\]"\']+')
+
+
+def linkify_urls(text: str) -> str:
+    """把正文里的 http(s) 地址变成 markdown 链接（飞书里可点开看大图/视频）。
+
+    链接文字就用地址本身，所以渲染出来的样子和纯文本一致，只是多了一层可点性 ——
+    网页消息流里同一份文案仍是纯文本，两边不会出现两种说法。
+    """
+    return _URL_PATTERN.sub(lambda match: f'[{match.group()}]({match.group()})', text)
+
+
 def build_card_payload(
     title: str,
     content: str,
@@ -80,7 +95,7 @@ def build_card_payload(
     line = format_details(details or {})
     if line:
         elements.append({'tag': 'markdown', 'content': wrap_code_block(line)})
-    elements.append({'tag': 'markdown', 'content': content})
+    elements.append({'tag': 'markdown', 'content': linkify_urls(content)})
     payload: dict = {
         'msg_type': 'interactive',
         'card': {

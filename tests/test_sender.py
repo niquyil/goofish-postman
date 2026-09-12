@@ -15,6 +15,7 @@ from goofishpostman.sender import (
     HEADER_COLORS,
     Sender,
     build_card_payload,
+    linkify_urls,
     pick_header_color,
     wrap_code_block,
 )
@@ -121,3 +122,24 @@ def test_header_color_is_stable_and_from_the_palette() -> None:
     assert pick_header_color('acct-1') in HEADER_COLORS
     assert pick_header_color('') == DEFAULT_HEADER_COLOR
     assert build_card_payload('t', 'c', color='green')['card']['header']['template'] == 'green'
+
+
+def test_urls_in_the_body_become_clickable_links() -> None:
+    """图片/视频消息的地址要能在飞书里点开（正文里的 http(s) 转成 markdown 链接）。"""
+    url = 'https://img.alicdn.com/imgextra/i4/O1CN01RSAPMB1dNBgdIEGcB_!!53-xy_chat.heic'
+    payload = build_card_payload('买家 → 主力号', f'[图片]\n{url}')
+    assert payload['card']['body']['elements'][0]['content'] == f'[图片]\n[{url}]({url})'
+
+
+def test_app_deep_links_are_left_as_plain_text() -> None:
+    """`fleamarket://` 是闲鱼 App 的深链，飞书不认，转成链接只会变成死链。"""
+    content = '去付款：fleamarket://order_detail?id=1&role=buyer'
+    assert linkify_urls(content) == content
+
+
+def test_linkify_keeps_surrounding_text() -> None:
+    assert (
+        linkify_urls('看这个 https://example.com/a.jpg 挺好')
+        == '看这个 [https://example.com/a.jpg](https://example.com/a.jpg) 挺好'
+    )
+    assert linkify_urls('没有链接') == '没有链接'

@@ -35,7 +35,24 @@ from goofishpostman.goofish_utils import (
 )
 from goofishpostman.types import MTOP_APP_KEY
 
-from fixtures import AROUSE_PAYLOAD, PUSH_MESSAGE_PAYLOAD, SESSION_ID, encrypted_record, plain_record, push_frame
+from fixtures import (
+    AROUSE_PAYLOAD,
+    AUDIO_CONTENT,
+    IMAGE_CONTENT,
+    IMAGE_URL,
+    PLATFORM_CARD_CONTENT,
+    PUSH_MESSAGE_PAYLOAD,
+    SESSION_ID,
+    TEXT_CARD_CONTENT,
+    TIP_CONTENT,
+    TRADE_CARD_CONTENT,
+    VIDEO_CONTENT,
+    VIDEO_URL,
+    encrypted_record,
+    plain_record,
+    push_frame,
+    push_payload_with_content,
+)
 
 
 # ── generate_mid / generate_uuid ─────────────────────────────────────────────
@@ -272,3 +289,83 @@ def test_describe_message_records_skips_headers() -> None:
     assert '有吗' in described  # 解出来的正文，排查时一眼能看到
 
     assert describe_message_records(push_frame(plain_record(AROUSE_PAYLOAD))) == '本帧没有 objectType/bizType=40 的记录'
+
+
+# ── 正文类型（content JSON）──────────────────────────────────────────────────
+def text_of(content: dict, reminder: str = '') -> str:
+    """走真实链路：把正文包成推送 payload → 解析 → 取可读文案。"""
+    from goofishpostman.goofish_live import extract_message_text
+
+    info = extract_message_info(push_frame(encrypted_record(push_payload_with_content(content, reminder))))
+    return extract_message_text(info)
+
+
+def test_text_content_stays_as_is() -> None:
+    assert text_of({'contentType': 1, 'text': {'text': '在吗'}}) == '在吗'
+    assert text_of({'atUsers': [], 'contentType': 1, 'text': {'text': '  带空格  '}}) == '带空格'
+
+
+def test_image_content_gives_label_and_url() -> None:
+    """图片消息原来只会显示报文里那句 `[图片]`，现在要带上可以点开的地址。"""
+    assert text_of(IMAGE_CONTENT) == f'[图片]\n{IMAGE_URL}'
+
+
+def test_multi_image_content_lists_every_url() -> None:
+    two = {'contentType': 2, 'image': {'pics': [{'url': IMAGE_URL}, {'url': 'https://img.alicdn.com/second.jpg'}]}}
+    assert text_of(two) == f'[图片]\n{IMAGE_URL}\nhttps://img.alicdn.com/second.jpg'
+
+
+def test_video_content_gives_url() -> None:
+    assert text_of(VIDEO_CONTENT) == f'[视频]\n{VIDEO_URL}'
+
+
+def test_audio_content_gives_duration_and_url() -> None:
+    assert text_of(AUDIO_CONTENT) == '[语音]\n时长 8 秒\nhttps://example.com/voice.amr'
+
+
+def test_text_card_content_is_stripped_of_html() -> None:
+    """卡片里的富文本要变成人能读的文字，内嵌链接转成「文字（url）」。"""
+    assert text_of(TEXT_CARD_CONTENT) == (
+        '[卡片]\n'
+        '物流已签收\n'
+        '3天后自动确认收货，如有问题可延长收货 查看详情（fleamarket://order_detail?id=4502273115115018200&role=Buyer）'
+    )
+
+
+def test_tip_content_keeps_text_without_href() -> None:
+    """没有 href 的 <a> 只留文字（“叮一下”），不能把标签一起打出来。"""
+    assert text_of(TIP_CONTENT) == '[提示]\n想要卖家更快回复？平台帮你催促，点击“叮一下”'
+
+
+def test_trade_card_content_gives_title_desc_and_button() -> None:
+    assert text_of(TRADE_CARD_CONTENT) == (
+        '[交易卡片]\n我已修改价格，等待你付款\n请确认价格与协商一致，并在24小时内付款\n去付款：fleamarket://order_detail?id=1&role=buyer'
+    )
+
+
+def test_platform_card_content_gives_subtitle_and_button() -> None:
+    assert text_of(PLATFORM_CARD_CONTENT) == (
+        '[平台消息]\n快给ta一个评价吧～\n交易体验还满意吗？评价帮更多人选购\n去评价：https://h5.m.goofish.com/wow/moyu/evaluate'
+    )
+
+
+def test_unknown_content_falls_back_to_reminder_text() -> None:
+    """认不出的新类型不要瞎标：退回报文自带的那句提醒。"""
+    assert text_of({'contentType': 99, 'foo': 'bar'}, reminder='[小程序]') == '[小程序]'
+    assert text_of({}) == '[不支持的消息类型]'  # 连提醒都没有时才用最后兜底
+
+
+def test_image_content_is_read_from_history_shape_too() -> None:
+    """同一份正文，推送与历史记录的包装层不同，两边都要能取到。"""
+    from goofishpostman.goofish_utils import describe_message_content, extract_message_content, format_content_text
+
+    history_payload = {
+        '1': {
+            '2': f'{SESSION_ID}@goofish',
+            '6': {'3': {'5': dumps(IMAGE_CONTENT)}},
+            '10': {'reminderTitle': '买家', 'reminderContent': '[图片]', 'senderUserId': '2221114099805'},
+        }
+    }
+    parsed = extract_message_content(history_payload)
+    assert parsed == IMAGE_CONTENT
+    assert format_content_text(describe_message_content(parsed)) == f'[图片]\n{IMAGE_URL}'

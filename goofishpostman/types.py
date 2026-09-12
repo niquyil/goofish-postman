@@ -24,6 +24,21 @@ class MessageInfo(TypedDict):
     raw: dict[str, Any]
 
 
+class MessageContent(TypedDict):
+    """私信正文的展示形态（网页消息流与飞书卡片共用同一份结构）。
+
+    - label：类型标注，如 `[图片]`；文本消息为空串
+    - lines：附加说明（卡片标题、提示语等，HTML 已去掉、内嵌链接已转成「文字（url）」）
+    - links：(显示名, 链接)，显示名为空表示直接用链接本身当文案
+
+    字段名用名词，取用它的函数（format_content_text 等）负责拼装。
+    """
+
+    label: str
+    lines: list[str]
+    links: list[tuple[str, str]]
+
+
 class DeliveryMethod(StrEnum):
     """配送方式，取值与闲鱼发布接口一致。"""
 

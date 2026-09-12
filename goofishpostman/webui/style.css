@@ -204,7 +204,9 @@ button.danger:hover { background: rgba(242, 88, 91, 0.15); }
 .feed li:last-child { border-bottom: 0; }
 .feed .time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .feed .who { color: var(--accent); white-space: nowrap; }
-.feed .text { word-break: break-word; }
+/* pre-line：非文本消息的文案是多行的（如「[图片]」换行接地址、卡片的标题与说明），
+   不保留换行会被拼成一长条，看不出结构 */
+.feed .text { word-break: break-word; white-space: pre-line; }
 .feed-events .who { color: var(--muted); }
 .feed-events .level-warning .text { color: var(--warn); }
 .feed-events .level-error .text { color: var(--err); }

@@ -17,17 +17,20 @@ from __future__ import annotations
 from base64 import b64decode
 from datetime import UTC, datetime
 from hashlib import md5
+from html import unescape
 from json import JSONDecodeError, dumps, loads
 from random import randint
+from re import DOTALL, IGNORECASE
+from re import compile as compile_pattern
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from msgpack import unpackb
 
-from .types import MTOP_APP_KEY, MessageInfo
+from .types import MTOP_APP_KEY, MessageContent, MessageInfo
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 # JS 里 device_id 用的字符表（注意末尾是 - 和 _，共 64 个）
 DEVICE_ID_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_'
@@ -463,3 +466,162 @@ def extract_session_title(payload: dict) -> tuple[str, str] | None:
     if not session_id or not title:
         return None
     return str(session_id), title
+
+
+# ── 消息正文（content）────────────────────────────────────────────────────────
+# contentType 的中文标注。真实抓包里出现过的取值：
+# 1 文本、2 图片、3 语音、4 视频、6 文本卡片、14 提示条、25 平台消息卡、26 交易卡片。
+# 只用来给非文本消息做标注，认不出的类型交给调用方兜底（不要瞎标）。
+CONTENT_TYPE_LABELS = {
+    1: '文本',
+    2: '图片',
+    3: '语音',
+    4: '视频',
+    6: '卡片',
+    14: '提示',
+    25: '平台消息',
+    26: '交易卡片',
+}
+
+_HTML_TAG = compile_pattern(r'<[^>]+>')
+# 卡片文本里的链接：<a size=13 href="fleamarket://..." target="_blank">查看详情</a>
+# href 可能不带引号，也可能只有 data-intent（没有 href，这种就只留文字）
+_HTML_LINK = compile_pattern(r'<a\b[^>]*?href=["\']?([^"\'\s>]+)["\']?[^>]*>(.*?)</a>', DOTALL | IGNORECASE)
+
+
+def extract_message_content(payload: dict) -> dict | None:
+    """取私信正文的 JSON（带 contentType 的那一段）。
+
+    推送与历史记录的包装层不同（由 find_message_body 定位），但正文本身都在
+    `['6']['3']['5']` 这个字符串里 —— 文本、图片、语音、视频、各类卡片都走这里。
+    """
+    body = find_message_body(payload)
+    if body is None:
+        return None
+    section = body.get('6')
+    inner = section.get('3') if isinstance(section, dict) else None
+    raw = inner.get('5') if isinstance(inner, dict) else None
+    if not isinstance(raw, str) or not raw.startswith('{'):
+        return None
+    try:
+        parsed = loads(raw)
+    except JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def describe_message_content(content: dict) -> MessageContent | None:
+    """把正文 JSON 归一成可展示的形态。
+
+    文本消息给原文，其它类型给标注 + 能拿到的信息（图片/视频/语音的链接、
+    卡片的标题与描述）。认不出的 contentType 返回 None，由调用方退回报文里
+    自带的那句提醒文案（reminderContent），不要硬猜。
+    """
+    if not isinstance(content, dict):
+        return None
+    kind = content.get('contentType')
+    match kind:
+        case 1:
+            text = _strip_html(_as_text((content.get('text') or {}).get('text')))
+            return MessageContent(label='', lines=[text] if text else [], links=[])
+        case 2:
+            return _describe_media(kind, content.get('image') or {}, _image_links)
+        case 3:
+            return _describe_media(kind, content.get('audio') or {}, _audio_links)
+        case 4:
+            return _describe_media(kind, content.get('video') or {}, _video_links)
+        case 6:
+            card = content.get('textCard') or {}
+            lines = [_strip_html(_as_text(card.get('title'))), _strip_html(_as_text(card.get('content')))]
+            return MessageContent(label=_label_of(kind), lines=[line for line in lines if line], links=[])
+        case 14:
+            tip = _strip_html(_as_text((content.get('tip') or {}).get('tip')))
+            return MessageContent(label=_label_of(kind), lines=[tip] if tip else [], links=[])
+        case 25 | 26:
+            return _describe_trade_card(content, kind)
+        case _:
+            return None
+
+
+def format_content_text(content: MessageContent) -> str:
+    """把展示形态拍平成多行纯文本（网页消息流与飞书卡片正文都用它）。"""
+    parts = [content['label'], *content['lines']]
+    parts.extend(f'{name}：{url}' if name else url for name, url in content['links'])
+    return '\n'.join(part for part in parts if part)
+
+
+def _label_of(kind: int) -> str:
+    """类型标注，如 `[图片]`、`[交易卡片]`。"""
+    return f'[{CONTENT_TYPE_LABELS[kind]}]'
+
+
+def _describe_media(kind: int, media: dict, links_of: Callable[[dict], list[tuple[str, str]]]) -> MessageContent:
+    """图片/语音/视频：标注 + 时长等说明 + 媒体链接。"""
+    lines = []
+    duration = media.get('duration')
+    if isinstance(duration, int | float) and duration > 0:
+        lines.append(f'时长 {int(duration)} 秒')
+    return MessageContent(label=_label_of(kind), lines=lines, links=links_of(media))
+
+
+def _image_links(image: dict) -> list[tuple[str, str]]:
+    """图片消息可以带多张：pics 里每张一个链接。"""
+    pics = image.get('pics')
+    if not isinstance(pics, list):
+        return []
+    urls = [_as_text((pic or {}).get('url')) for pic in pics if isinstance(pic, dict)]
+    return [('', url) for url in urls if url]
+
+
+def _audio_links(audio: dict) -> list[tuple[str, str]]:
+    url = _as_text(audio.get('url'))
+    return [('', url)] if url else []
+
+
+def _video_links(video: dict) -> list[tuple[str, str]]:
+    """视频给播放地址（封面图不单独列，避免明细里堆两条同义链接）。"""
+    url = _as_text(video.get('url'))
+    return [('', url)] if url else []
+
+
+def _describe_trade_card(content: dict, kind: int) -> MessageContent:
+    """交易卡片（26）与平台消息卡（25）：标题 + 副标题/描述 + 按钮链接。
+
+    真实形状：{'dxCard': {'item': {'main': {'exContent': {'title': .., 'subTitle'/'desc': ..,
+    'button': {'text': .., 'targetUrl': ..}}, 'targetUrl': ..}}}}
+    """
+    main = ((content.get('dxCard') or {}).get('item') or {}).get('main') or {}
+    ex_content = main.get('exContent') or {}
+    lines = [
+        _strip_html(_as_text(ex_content.get('title'))),
+        _strip_html(_as_text(ex_content.get('subTitle') or ex_content.get('desc'))),
+    ]
+    links: list[tuple[str, str]] = []
+    for button in _iter_buttons(ex_content):
+        url = _as_text(button.get('targetUrl'))
+        if url:
+            links.append((_strip_html(_as_text(button.get('text'))) or '查看详情', url))
+    if not links:
+        url = _as_text(main.get('targetUrl'))
+        if url:
+            links.append(('查看详情', url))
+    return MessageContent(label=_label_of(kind), lines=[x for x in lines if x], links=links)
+
+
+def _iter_buttons(ex_content: dict) -> Iterator[dict]:
+    """卡片上的按钮：单个 button，或多个 buttons。"""
+    buttons = ex_content.get('buttons')
+    candidates = buttons if isinstance(buttons, list) else [ex_content.get('button')]
+    return (button for button in candidates if isinstance(button, dict))
+
+
+def _strip_html(value: str) -> str:
+    """去掉卡片文本里的 HTML：`<a href="url">文字</a>` 转成「文字（url）」，其余标签直接删。"""
+    unescaped = value.replace('&nbsp;', ' ')
+    with_links = _HTML_LINK.sub(lambda match: f'{_HTML_TAG.sub("", match.group(2))}（{match.group(1)}）', unescaped)
+    return unescape(_HTML_TAG.sub('', with_links)).strip()
+
+
+def _as_text(value: Any) -> str:
+    """只认字符串字段（报文里偶尔是数字），顺手去掉首尾空白。"""
+    return value.strip() if isinstance(value, str) else ''

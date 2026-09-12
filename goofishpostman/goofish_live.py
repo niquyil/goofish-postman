@@ -12,9 +12,12 @@ from .cookies import Cookies
 from .goofish_apis import Goofish
 from .goofish_utils import (
     carries_message,
+    describe_message_content,
     describe_message_records,
+    extract_message_content,
     extract_message_info,
     extract_session_title,
+    format_content_text,
     generate_device_id,
     generate_mid,
     generate_uuid,
@@ -57,35 +60,19 @@ def build_ack(message: dict) -> dict:
 
 
 def extract_message_text(info: MessageInfo) -> str:
-    """从解析后的 payload 里取出可读文本（非文本消息给出类型占位）。
+    """可读文案：文本给原文，其它类型给标注 + 说明 + 链接。
 
-    推送里的消息体比历史记录多包一层（['1']['1'] vs ['1']），
-    所以这里递归找 contentType/text 段，而不是写死路径。
+    非文本消息在报文里只有一句很粗的提醒（reminderContent，如 `[图片]`），
+    图片/视频/语音的地址、卡片的标题与描述都藏在正文 JSON 里；这里把它们取出来，
+    网页消息流与飞书卡片用的是同一份文案。正文认不出来时退回那句提醒。
     """
-    custom = _find_custom(info['raw'])
-    if custom:
-        match custom.get('contentType'):
-            case 1:
-                text = (custom.get('text') or {}).get('text')
-                if text:
-                    return text
-            case 3:
-                return '[图片]'
+    content = extract_message_content(info['raw'])
+    described = describe_message_content(content) if content else None
+    if described is not None:
+        text = format_content_text(described)
+        if text:
+            return text
     return info['send_message'] or '[不支持的消息类型]'
-
-
-def _find_custom(value, depth: int = 0):
-    """在 payload 里定位 {'contentType': .., 'text'/'image': ..} 这一段。"""
-    if depth > 6:
-        return None
-    if isinstance(value, dict):
-        if 'contentType' in value and ('text' in value or 'image' in value):
-            return value
-        for key in ('1', '6'):
-            found = _find_custom(value.get(key), depth + 1)
-            if found:
-                return found
-    return None
 
 
 class GoofishLive:

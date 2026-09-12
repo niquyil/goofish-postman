@@ -90,12 +90,12 @@ uv sync
 
 ---
 
-## 方式一：Web 管理台（推荐，支持多账号汇总）
+## 使用方式：Web 管理台
 
 同时登录多个闲鱼账号，把各账号收到的私信汇总推送到**同一个飞书机器人**（企业自建应用），并在网页里管理账号。
 
 ```bash
-uv run python -m goofishpostman web
+uv run python -m goofishpostman
 # 默认 http://127.0.0.1:8848
 ```
 
@@ -218,8 +218,8 @@ uv run python -m goofishpostman web
 启动参数：
 
 ```bash
-uv run python -m goofishpostman web --host 0.0.0.0 --port 8080    # 改监听地址 / 端口
-uv run python -m goofishpostman web --data /path/to/accounts.json # 改用其它配置文件
+uv run python -m goofishpostman --host 0.0.0.0 --port 8080    # 改监听地址 / 端口
+uv run python -m goofishpostman --data /path/to/accounts.json # 改用其它配置文件
 ```
 
 | 项          | 位置                                                    |
@@ -234,41 +234,11 @@ uv run python -m goofishpostman web --data /path/to/accounts.json # 改用其它
 
 ---
 
-## 方式二：单账号命令行模式
-
-### 配置 Cookie
-
-登录 [goofish.com](https://www.goofish.com) 后，从浏览器开发者工具中复制完整 Cookie 字符串，写入配置文件：
-
-| 平台    | 路径                                            |
-|-------|-----------------------------------------------|
-| Windows | `%APPDATA%\GoofishPostman\.env`                |
-| Linux / macOS | `~/.goofish-postman/.env`               |
-
-```dotenv
-COOKIE_STR=复制出来的完整 Cookie 字符串
-# 飞书推送（用于把收到的私信转发出去，可留空）—— 企业自建应用的凭据与目标群
-APP_ID=cli_xxxxxxxx
-APP_SECRET=your_app_secret
-CHAT_ID=oc_xxxxxxxx
-```
-
-> Cookie 必须是**登录后的状态**，否则无法获取消息。
-> 命令行也可以调用 `goofish_apis.login_with_qrcode()` 扫码登录，直接拿到已登录的 `Goofish` 实例。
-
-### 直接运行
-
-```bash
-python -m goofishpostman run    # 不带子命令时默认就是 run
-```
-
----
-
 ## 项目结构
 
 ```
 goofishpostman/
-├── __main__.py        # 入口：web（多账号管理台）/ run（单账号转发）
+├── __main__.py        # 入口：启动 Web 管理台（--host / --port / --data）
 ├── web.py             # FastAPI 管理接口 + SSE 实时推送 + 扫码登录会话管理
 ├── supervisor.py      # 多账号调度：并发监听、启停、断线重连、事件流
 ├── store.py           # 账号与配置持久化（原子写入，0600）
@@ -284,8 +254,8 @@ goofishpostman/
 ├── goofish_utils.py   # 协议工具：sign 签名、MessagePack 解密、消息解析（纯 Python）
 ├── cookies.py         # Cookie 字符串 / Session 互转
 ├── headers.py         # UA 等公共请求头
-├── path.py            # 配置文件路径
-├── sender.py          # 飞书机器人推送
+├── path.py            # 配置文件与静态资源路径
+├── sender.py          # 飞书卡片组装（配色、明细、链接化）
 ├── types.py           # 消息类型、价格 / 配送参数
 └── script/            # 逆向 JS（仅 tfstk cookie 用，可选）
 tests/                 # 离线回归测试（协议、长连接、多账号调度、Web 接口、扫码登录）

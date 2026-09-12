@@ -12,7 +12,6 @@ dependencies = [
     "loguru>=0.7.3",
     "msgpack>=1.2.2",  # 闲鱼消息体是 MessagePack（原 goofish.js 里那 500 行就是它的混淆实现）
     "pydantic>=2.13.5",
-    "python-dotenv>=1.2.3",
     "qrcode[pil]>=8.2",  # [pil] 会带上 pillow：qrcode 渲染 PNG 时 import PIL，缺了直接 ModuleNotFoundError
     "requests>=2.34.2",
     "uvicorn>=0.52.4",

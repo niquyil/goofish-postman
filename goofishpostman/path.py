@@ -11,7 +11,6 @@ match name:
     case _:
         raise NotImplementedError
 
-ENV_FILE = USER_DIR / '.env'
 DATA_FILE = USER_DIR / 'accounts.json'
 STATIC_DIR = Path(__file__).resolve().parent / 'webui'
 TEMPLATE_DIR = STATIC_DIR / 'templates'

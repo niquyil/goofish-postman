@@ -253,12 +253,13 @@ def test_message_links_round_trip_and_are_bounded(tmp_dir) -> None:
     from goofishpostman.store import _MAX_MESSAGE_LINKS, MessageLink
 
     store = Store(tmp_dir / 'a.json')
-    store.remember_message_link('om-1', 'acct-1', '54995284239', '2221114099805')
+    store.remember_message_link('om-1', 'acct-1', '54995284239', '2221114099805', '买家小王')
 
     reloaded = Store(store.path)
     link = reloaded.get_message_link('om-1')
     assert link is not None
     assert (link.account_id, link.cid, link.toid) == ('acct-1', '54995284239', '2221114099805')
+    assert link.peer_name == '买家小王'  # 回复反馈里要写「向 买家小王 回复」
 
     # 直接把表填满（真写 500 次文件在 Windows 上又慢又容易被占用），再记一条看是否淘汰最早的
     store.data.message_links = {

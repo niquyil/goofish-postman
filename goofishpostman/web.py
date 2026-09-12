@@ -513,6 +513,16 @@ def create_app(store: Store, supervisor: Supervisor) -> FastAPI:
     return app
 
 
+def console_url(host: str, port: int) -> str:
+    """管理界面的访问地址。
+
+    监听 `0.0.0.0` / `::` 时换成回环地址 —— 那是「监听所有网卡」的意思，
+    浏览器打不开 0.0.0.0。
+    """
+    display = '127.0.0.1' if host in ('', '0.0.0.0', '::') else host
+    return f'http://{display}:{port}'
+
+
 async def serve(
     store: Store,
     supervisor: Supervisor,
@@ -549,13 +559,17 @@ async def serve(
             loop.add_signal_handler(sig, lambda: setattr(server, 'should_exit', True))
 
     async def report_ready() -> None:
-        """等 uvicorn 真正监听后再回报端口（随机端口时才知道实际值）。"""
+        """等 uvicorn 真正监听后再回报地址（随机端口时才知道实际值）。"""
         while not server.started and not server.should_exit:
             await sleep(0.02)
         actual = get_actual_port(server) or listen_port
-        logger.info(f'管理界面已启动: http://{listen_host}:{actual}')
+        url = console_url(listen_host, actual)
+        if listen_host in ('', '0.0.0.0', '::'):
+            logger.info(f'管理界面已启动: {url}（监听 {listen_host or "0.0.0.0"}:{actual}）')
+        else:
+            logger.info(f'管理界面已启动: {url}')
         if ready is not None and not ready.done():
-            ready.set_result(f'http://{listen_host}:{actual}')
+            ready.set_result(url)
 
     reporter = create_task(report_ready())
     try:

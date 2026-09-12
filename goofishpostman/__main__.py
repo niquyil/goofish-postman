@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser
-from asyncio import create_task, run
+from asyncio import Future, create_task, get_running_loop, run
 from pathlib import Path
 from sys import argv as sys_argv  # 本文件的 main() 有同名参数 argv，导入时改名
+from webbrowser import open as open_browser
 
 from anyio import to_thread
 from loguru import logger
@@ -23,7 +24,18 @@ async def warm_up_feishu_sdk() -> None:
     logger.debug('飞书 SDK 预热完成')
 
 
-async def run_web(store: Store, host: str = '', port: int = 0) -> None:
+async def open_console(ready: Future) -> None:
+    """等管理界面真正监听后，用系统默认浏览器把它打开。"""
+    url = await ready
+    try:
+        # webbrowser.open 是阻塞调用，丢线程里；无图形环境时它会返回 False
+        if not await to_thread.run_sync(open_browser, url):
+            logger.warning(f'没能自动打开浏览器，请手动访问 {url}')
+    except Exception as e:  # noqa: BLE001 - 打不开浏览器不该影响服务
+        logger.warning(f'自动打开浏览器失败（{type(e).__name__}: {e}），请手动访问 {url}')
+
+
+async def run_web(store: Store, host: str = '', port: int = 0, browser: bool = True) -> None:
     """起 Web 管理界面，并按配置拉起所有启用的账号。"""
     from .feishu_events import FeishuReplyListener
     from .web import serve
@@ -42,7 +54,11 @@ async def run_web(store: Store, host: str = '', port: int = 0) -> None:
             on_ignored=supervisor.note_ignored_feishu_event,
         ).start()
     await supervisor.start_enabled()
-    await serve(store, supervisor, host=host, port=port)
+
+    ready: Future = get_running_loop().create_future()
+    if browser:
+        create_task(open_console(ready))
+    await serve(store, supervisor, host=host, port=port, ready=ready)
 
 
 def build_parser() -> ArgumentParser:
@@ -50,6 +66,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument('--host', default='', help='监听地址（默认取配置文件）')
     parser.add_argument('--port', type=int, default=0, help='监听端口（默认取配置文件）')
     parser.add_argument('--data', type=Path, default=None, help='账号配置文件路径（默认在用户目录）')
+    parser.add_argument('--no-browser', action='store_true', help='启动后不自动打开浏览器')
     return parser
 
 
@@ -75,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         logger.warning('尚未配置飞书推送（应用凭据或目标群缺失），消息只会在界面里显示')
     try:
-        run(run_web(store, host=host, port=port))
+        run(run_web(store, host=host, port=port, browser=not args.no_browser))
     except KeyboardInterrupt:
         logger.info('已退出')
     return 0

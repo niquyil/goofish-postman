@@ -173,6 +173,8 @@ class MessageLink(BaseModel):
     account_id: str
     cid: str
     toid: str
+    # 对方昵称（回复反馈里要写「向 xx 回复」）
+    peer_name: str = ''
     at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -275,11 +277,13 @@ class Store:
         self.save()
 
     # ── 飞书卡片 → 闲鱼会话 ────────────────────────────────────────────────────
-    def remember_message_link(self, message_id: str, account_id: str, cid: str, toid: str) -> None:
+    def remember_message_link(self, message_id: str, account_id: str, cid: str, toid: str, peer_name: str = '') -> None:
         """记下「这条飞书消息是从哪个闲鱼会话发出来的」，回复时要用。"""
         if not message_id:
             return
-        self.data.message_links[message_id] = MessageLink(account_id=account_id, cid=cid, toid=toid)
+        self.data.message_links[message_id] = MessageLink(
+            account_id=account_id, cid=cid, toid=toid, peer_name=peer_name
+        )
         while len(self.data.message_links) > _MAX_MESSAGE_LINKS:
             # 字典保持插入顺序，先记的先淘汰（老卡片不太可能再被回复）
             self.data.message_links.pop(next(iter(self.data.message_links)))

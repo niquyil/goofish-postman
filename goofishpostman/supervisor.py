@@ -337,7 +337,9 @@ class Supervisor:
                 return
             # 记下「这条飞书消息 → 这个闲鱼会话」：在飞书里回复它就能发到闲鱼
             if message_id:
-                self.store.remember_message_link(message_id, current.id, message['cid'], message['send_user_id'])
+                self.store.remember_message_link(
+                    message_id, current.id, message['cid'], message['send_user_id'], record.sender
+                )
 
         return handle_message
 
@@ -364,20 +366,33 @@ class Supervisor:
             return
         answer_to = source_message_id or feishu_message_id
         account = self.store.get(link.account_id)
-        # 和卡片标题保持一致：用「昵称(备注名)」而不是单纯的备注名
-        label = account.label if account else link.account_id
+        label = self._reply_summary(account, link)
         live = self._lives.get(link.account_id)
         if live is None:
-            await self.notifier.reply_message(answer_to, f'{label} 当前没有在监听，没能发出这条回复')
+            await self.notifier.reply_message(answer_to, f'{label}失败：账号当前没有在监听')
             return
         try:
             await live.send_text_to_conversation(link.cid, link.toid, text)
         except Exception as e:  # noqa: BLE001 - 任何异常都要告诉用户，而不是静默失败
-            self.publish_event('error', link.account_id, f'飞书回复转发失败: {type(e).__name__}: {e}')
-            await self.notifier.reply_message(answer_to, f'发送失败: {type(e).__name__}: {e}')
+            logger.error(f'{label}失败（{type(e).__name__}: {e}）：{text}')
+            self.publish_event('error', link.account_id, f'{label}失败（{type(e).__name__}: {e}）：{text}')
+            await self.notifier.reply_message(answer_to, f'{label}失败：{type(e).__name__}: {e}')
             return
-        self.publish_event('info', link.account_id, f'已用 {label} 把飞书回复发给 {link.toid}')
-        await self.notifier.reply_message(answer_to, f'已用 {label} 发送到闲鱼会话 {link.cid}')
+        # 日志里带上回复内容，便于回查；飞书里只给一句结果，不刷屏
+        logger.info(f'{label}：{text}')
+        self.publish_event('info', link.account_id, f'{label}：{text}')
+        await self.notifier.reply_message(answer_to, label)
+
+    @staticmethod
+    def _reply_summary(account, link) -> str:
+        """反馈文案：已通过<发送方昵称>（<发送方账号>）向<对方昵称>回复。
+
+        取不到昵称就退回备注名/账号 id，保证这句话总能读通。
+        """
+        nickname = (account.nickname if account else '') or (account.display_name if account else '') or '未知账号'
+        unb = (account.unb if account else '') or (account.id if account else link.account_id)
+        peer = link.peer_name or link.toid
+        return f'已通过{nickname}（{unb}）向{peer}回复'
 
     async def note_ignored_feishu_event(self, detail: str) -> None:
         """飞书事件送到了但用不上（机器人自己发的、非文本消息…）：只记事件日志。"""

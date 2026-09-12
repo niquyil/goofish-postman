@@ -243,7 +243,11 @@ class ReplyLive:
 
 
 def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) -> None:
-    """在飞书里回复卡片 → 用对应的账号发到对应的闲鱼会话，并回一句反馈。"""
+    """在飞书里回复卡片 → 用对应的账号发到对应的闲鱼会话，并回一句反馈。
+
+    反馈文案：已通过<发送方昵称>（<发送方账号>）向<对方昵称>回复；
+    日志/事件流里再多带一句回复内容。
+    """
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(supervisor, push_frame(encrypted_record()))
     assert notifier.card_payloads, '应该先推出一张卡片'
@@ -254,9 +258,10 @@ def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) 
 
     run(supervisor.forward_feishu_reply('om-1', '有货的，可以直接拍'))
 
+    summary = '已通过网课学习私人助理（13993122）向一站式学习助手回复'
     assert live.sent == [(SESSION_ID, '2221114099805', '有货的，可以直接拍')]
-    assert notifier.replies == [('om-1', f'已用 {ACCOUNT_LABEL} 发送到闲鱼会话 {SESSION_ID}')]
-    assert any('飞书回复' in event.message for event in supervisor.events)
+    assert notifier.replies == [('om-1', summary)]
+    assert any(event.message == f'{summary}：有货的，可以直接拍' for event in supervisor.events)
 
 
 def test_reply_to_foreign_message_is_only_logged(tmp_dir, stub_decrypt) -> None:
@@ -306,8 +311,21 @@ def test_reply_failure_is_reported_to_the_user(tmp_dir, stub_decrypt) -> None:
 
     run(supervisor.forward_feishu_reply('om-1', '在吗'))
 
-    assert '发送失败' in notifier.replies[0][1]
+    assert notifier.replies[0][1].startswith('已通过网课学习私人助理（13993122）向一站式学习助手回复失败')
     assert '连接已断开' in notifier.replies[0][1]
+    assert any(event.level == 'error' and '连接已断开' in event.message for event in supervisor.events)
+
+
+def test_reply_summary_falls_back_when_nickname_or_peer_missing(tmp_dir, stub_decrypt) -> None:
+    """昵称/对方名字取不到时也要能读通（退回备注名、账号 id、对方 uid）。"""
+    from goofishpostman.store import MessageLink
+
+    supervisor, _ = make_supervisor(tmp_dir)
+    account = supervisor.store.list_accounts()[0]
+    link = MessageLink(account_id=account.id, cid='c', toid='2221114099805', peer_name='')
+
+    assert supervisor._reply_summary(account, link) == '已通过网课学习私人助理（13993122）向2221114099805回复'
+    assert supervisor._reply_summary(None, link) == '已通过未知账号（' + account.id + '）向2221114099805回复'
 
 
 def test_extract_message_uid_extracted_from_real_payload() -> None:

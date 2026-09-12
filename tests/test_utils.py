@@ -47,6 +47,7 @@ from fixtures import (
     TIP_CONTENT,
     TRADE_CARD_CONTENT,
     VIDEO_CONTENT,
+    VIDEO_COVER_URL,
     VIDEO_URL,
     encrypted_record,
     plain_record,
@@ -409,9 +410,39 @@ def test_message_images_are_extracted_for_upload() -> None:
         push_frame(encrypted_record(push_payload_with_content({'contentType': 1, 'text': {'text': '在吗'}})))
     )['raw']
     assert extract_message_images(text_payload) == []
-    # 视频暂时只给链接：飞书的文件上传接口是另一套（im/v1/files）
+    # 视频/语音走 extract_message_media，不算图片
     video_payload = extract_message_info(push_frame(encrypted_record(push_payload_with_content(VIDEO_CONTENT))))['raw']
     assert extract_message_images(video_payload) == []
+
+
+def test_message_media_is_extracted_for_video_and_audio() -> None:
+    """视频 / 语音要能取出地址、封面与时长（上传飞书后视频内嵌、语音另发一条）。"""
+    from goofishpostman.goofish_utils import extract_message_media
+
+    def media_of(content: dict):
+        payload = extract_message_info(push_frame(encrypted_record(push_payload_with_content(content))))['raw']
+        return extract_message_media(payload)
+
+    assert media_of(VIDEO_CONTENT) == {'kind': 'video', 'url': VIDEO_URL, 'cover': VIDEO_COVER_URL, 'duration': 0}
+    assert media_of(AUDIO_CONTENT) == {
+        'kind': 'audio',
+        'url': 'https://example.com/voice.amr',
+        'cover': '',
+        'duration': 8,
+    }
+    assert media_of(IMAGE_CONTENT) is None  # 图片不走这条路
+    assert media_of({'contentType': 4, 'video': {}}) is None  # 没有地址就没法处理
+    assert media_of({'contentType': 99}) is None
+
+
+def test_duration_is_converted_to_milliseconds() -> None:
+    """闲鱼时长单位没有权威文档：小数值按秒、大数值按毫秒，0 表示不知道。"""
+    from goofishpostman.goofish_utils import to_milliseconds
+
+    assert to_milliseconds(0) == 0
+    assert to_milliseconds(12) == 12000  # 12 秒
+    assert to_milliseconds(2500) == 2500  # 本来就是毫秒
+    assert to_milliseconds(-3) == 0
 
 
 def test_image_content_is_read_from_history_shape_too() -> None:

@@ -14,6 +14,7 @@ from .accounts import FeishuNotifier, NotifyError
 from .goofish_live import GoofishLive, extract_message_text
 from .goofish_utils import (
     extract_message_images,
+    extract_message_media,
     extract_message_time,
     extract_message_uid,
     format_time,
@@ -325,6 +326,7 @@ class Supervisor:
                     details=self._build_message_details(message),
                     color=pick_header_color(current.id),
                     images=extract_message_images(message['raw']),
+                    media=extract_message_media(message['raw']),
                 )
             except NotifyError as e:
                 self.publish_event('error', current.id, str(e))

@@ -60,25 +60,40 @@ def _to_markdown_link(match) -> str:
 
 
 def build_card(
-    title: str, content: str, details: dict[str, str] | None = None, color: str = DEFAULT_HEADER_COLOR
+    title: str,
+    content: str,
+    details: dict[str, str] | None = None,
+    color: str = DEFAULT_HEADER_COLOR,
+    video: dict[str, str] | None = None,
 ) -> dict:
-    """富文本卡片：标题标明消息流向，明细是多行小号灰字，正文用普通文本。
+    """富文本卡片：标题标明消息流向，明细是多行小号灰字，正文用普通文本，可内嵌视频。
 
-    标题已经承担了"这是谁发给谁"的信息，正文不必再抢视觉；明细（时间/商品名）是辅助信息，
-    用 markdown 的 notation 字号（小号灰字）渲染，再加一条分割线跟正文分开 ——
-    比代码框干净：飞书会在代码框上多加一行「N 行代码」，那行没有意义。
+    - 明细用 markdown 的 notation 字号（小号灰字）+ 分割线跟正文分开，比代码框干净：
+      飞书会在代码框上多加一行「N 行代码」，那行没有意义；
+    - `video` 传 {'file_key': .., 'img_key': ..} 时内嵌视频组件。视频组件要求卡片
+      关掉转发（`enable_forward: false`），否则整张卡片发不出去（官方文档明确要求）。
 
-    用卡片 2.0 的 markdown 组件（1.0 的 lark_md 连字号、分割线都控制不了）。
+    用卡片 2.0 的 markdown / video 组件（1.0 的 lark_md 连字号、分割线都控制不了）。
     """
     elements: list[dict] = []
     line = format_details(details or {})
     if line:
         elements.append({'tag': 'markdown', 'content': line, 'text_size': 'notation'})
-        elements.append({'tag': 'hr'})
-    elements.append({'tag': 'markdown', 'content': linkify_urls(content)})
+        if content:
+            elements.append({'tag': 'hr'})
+    if content:
+        elements.append({'tag': 'markdown', 'content': linkify_urls(content)})
+    if video:
+        element: dict = {'tag': 'video', 'file_key': video.get('file_key', ''), 'show_time': True}
+        if video.get('img_key'):
+            element['cover'] = {'img_key': video['img_key']}
+        elements.append(element)
+    config: dict = {'update_multi': True}
+    if video:
+        config['enable_forward'] = False
     return {
         'schema': '2.0',
-        'config': {'update_multi': True},
+        'config': config,
         'header': {'title': {'tag': 'plain_text', 'content': title}, 'template': color},
         'body': {'direction': 'vertical', 'elements': elements},
     }

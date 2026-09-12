@@ -213,16 +213,18 @@ class FakeLarkResource:
 
 
 class FakeLarkClient:
-    """仿 lark_oapi.Client 的最小接口（只用到 im.v1.message / image / chat）。"""
+    """仿 lark_oapi.Client 的最小接口（只用到 im.v1.message / image / file / chat）。"""
 
-    def __init__(self, message_code: int = 0, image_code: int = 0, chat_code: int = 0) -> None:
+    def __init__(self, message_code: int = 0, image_code: int = 0, chat_code: int = 0, file_code: int = 0) -> None:
         self.message_code = message_code
         self.image_code = image_code
         self.chat_code = chat_code
+        self.file_code = file_code
         self.calls: list[tuple[str, object]] = []
         v1 = SimpleNamespace(
             message=FakeLarkResource(self, 'message'),
             image=FakeLarkResource(self, 'image'),
+            file=FakeLarkResource(self, 'file'),
             chat=FakeLarkResource(self, 'chat'),
         )
         self.im = SimpleNamespace(v1=v1)
@@ -233,6 +235,8 @@ class FakeLarkClient:
                 return FakeLarkResponse(self.message_code, 'send denied', SimpleNamespace(message_id='om_1'))
             case 'image':
                 return FakeLarkResponse(self.image_code, 'upload denied', SimpleNamespace(image_key='img-key-1'))
+            case 'file':
+                return FakeLarkResponse(self.file_code, 'file upload denied', SimpleNamespace(file_key='file-key-1'))
             case _:
                 items = [SimpleNamespace(chat_id='oc_chat1', name='卖家消息')]
                 return FakeLarkResponse(self.chat_code, 'list denied', SimpleNamespace(items=items))
@@ -261,13 +265,13 @@ class FakeDownload:
 
 
 class FakeDownloadClient:
-    """仿 httpx.AsyncClient，只管下载闲鱼图片。"""
+    """仿 httpx.AsyncClient，只管下载闲鱼图片 / 媒体。"""
 
-    def __init__(self, status_code: int = 200) -> None:
+    def __init__(self, status_code: int = 200, image: bytes | None = None) -> None:
         self.status_code = status_code
         self.is_closed = False
         self.urls: list[str] = []
-        self.image = b'\xff\xd8\xff\xe0fake-jpeg'
+        self.image = image if image is not None else b'\xff\xd8\xff\xe0fake-jpeg'
 
     async def get(self, url: str, **kwargs) -> FakeDownload:
         self.urls.append(url)
@@ -413,6 +417,125 @@ def test_list_chats_returns_groups(monkeypatch) -> None:
 
     assert chats == [{'chat_id': 'oc_chat1', 'name': '卖家消息'}]
     assert ('page_size', '50') in lark.last('chat').queries
+
+
+# ── 视频 / 语音 ───────────────────────────────────────────────────────────────
+VIDEO_URL = 'http://example.com/clip.mp4'
+COVER_URL = 'https://img.alicdn.com/cover.jpg'
+OPUS_BYTES = b'OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00OpusHead\x01\x02' + b'\x00' * 40
+
+
+def test_video_is_uploaded_and_embedded_in_the_card(monkeypatch) -> None:
+    """视频：上传 mp4 换 file_key、封面换 img_key，再用 video 组件内嵌进卡片。"""
+    lark = FakeLarkClient()
+    downloads = FakeDownloadClient(image=b'\x00\x00\x00 ftypisom' + b'\x00' * 32)
+    notifier = make_notifier(monkeypatch, lark, downloads)
+    media = {'kind': 'video', 'url': VIDEO_URL, 'cover': COVER_URL, 'duration': 12}
+    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+
+    upload = lark.last('file')
+    assert upload.uri == '/open-apis/im/v1/files'
+    assert upload.body.file_type == 'mp4'
+    assert upload.body.file_name == 'message.mp4'
+    assert upload.body.duration == 12000  # 12 秒按秒处理，换成毫秒
+
+    card = card_of(lark.last('message'))
+    # 视频组件要求关掉转发，否则卡片发不出去
+    assert card['config'] == {'update_multi': True, 'enable_forward': False}
+    assert card['body']['elements'][-1] == {
+        'tag': 'video',
+        'file_key': 'file-key-1',
+        'show_time': True,
+        'cover': {'img_key': 'img-key-1'},
+    }
+    assert VIDEO_URL not in str(card)  # 地址行与 [视频] 标注都被内嵌视频取代
+    assert '[视频]' not in str(card)
+
+
+def test_audio_is_sent_as_a_separate_voice_message(monkeypatch) -> None:
+    """语音：OPUS 直接上传，卡片里保留 [语音] 标注，随后补发一条 audio 消息。"""
+    lark = FakeLarkClient()
+    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=OPUS_BYTES))
+    media = {'kind': 'audio', 'url': 'https://example.com/voice.opus', 'cover': '', 'duration': 8}
+    run(
+        notifier.send_account_message(
+            '主力号', {'send_user_name': '买家'}, '[语音]\nhttps://example.com/voice.opus', media=media
+        )
+    )
+
+    upload = lark.last('file')
+    assert upload.body.file_type == 'opus'
+    assert upload.body.file_name == 'message.opus'
+    assert upload.body.duration == 8000
+
+    card_request = next(request for resource, request in lark.calls if resource == 'message')
+    card = loads(card_request.body.content)
+    assert card['body']['elements'][0]['content'] == '[语音]'  # 标注留着，和下面的语音对上
+    assert 'example.com/voice.opus' not in str(card)  # 地址行去掉
+    assert all(element['tag'] != 'video' for element in card['body']['elements'])  # 语音没有卡片组件
+
+    audio_request = [request for resource, request in lark.calls if resource == 'message'][-1]
+    assert audio_request.body.msg_type == 'audio'
+    assert loads(audio_request.body.content) == {'file_key': 'file-key-1', 'duration': 8000}
+
+
+def test_audio_without_opus_or_ffmpeg_falls_back_to_the_link(monkeypatch) -> None:
+    """飞书只收 OPUS；本机没有 ffmpeg 时不上传，保留链接（消息照发）。"""
+    monkeypatch.setattr('goofishpostman.accounts.which', lambda name: None)
+    lark = FakeLarkClient()
+    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=b'#!AMR\n\x00\x00'))
+    media = {'kind': 'audio', 'url': 'https://example.com/voice.amr', 'cover': '', 'duration': 5}
+    run(
+        notifier.send_account_message(
+            '主力号', {'send_user_name': '买家'}, '[语音]\nhttps://example.com/voice.amr', media=media
+        )
+    )
+
+    assert lark.count('file') == 0
+    assert lark.count('message') == 1  # 只有卡片，没有语音消息
+    assert 'example.com/voice.amr' in str(card_of(lark.last('message')))
+
+
+def test_audio_is_transcoded_when_ffmpeg_exists(monkeypatch) -> None:
+    """本机有 ffmpeg 时把非 OPUS 语音转成 OPUS 再上传（转码本身在别的用例里不该执行）。"""
+    monkeypatch.setattr('goofishpostman.accounts.which', lambda name: '/usr/bin/ffmpeg')
+    monkeypatch.setattr(FeishuNotifier, '_transcode_with_ffmpeg', staticmethod(lambda data: OPUS_BYTES))
+    lark = FakeLarkClient()
+    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=b'#!AMR\n\x00\x00'))
+    media = {'kind': 'audio', 'url': 'https://example.com/voice.amr', 'cover': '', 'duration': 5}
+    run(
+        notifier.send_account_message(
+            '主力号', {'send_user_name': '买家'}, '[语音]\nhttps://example.com/voice.amr', media=media
+        )
+    )
+
+    assert lark.last('file').body.file_type == 'opus'
+    assert [request for resource, request in lark.calls if resource == 'message'][-1].body.msg_type == 'audio'
+
+
+def test_media_upload_failure_falls_back_to_the_link(monkeypatch) -> None:
+    """上传失败不能把整条推送带崩：退回链接，卡片照发。"""
+    lark = FakeLarkClient(file_code=234006)
+    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=b'\x00' * 64))
+    media = {'kind': 'video', 'url': VIDEO_URL, 'cover': '', 'duration': 0}
+    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+
+    card = card_of(lark.last('message'))
+    assert card['body']['elements'][0]['content'] == f'[视频]\n[{VIDEO_URL}]({VIDEO_URL})'
+    assert 'enable_forward' not in card['config']
+
+
+def test_same_video_is_uploaded_once(monkeypatch) -> None:
+    """同一条消息重复下发（实测会重复 6 次）时视频只上传一次。"""
+    lark = FakeLarkClient()
+    downloads = FakeDownloadClient(image=b'\x00' * 64)
+    notifier = make_notifier(monkeypatch, lark, downloads)
+    media = {'kind': 'video', 'url': VIDEO_URL, 'cover': '', 'duration': 0}
+    for _ in range(3):
+        run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+
+    assert lark.count('file') == 1
+    assert downloads.urls == [VIDEO_URL]
 
 
 def test_sdk_is_not_loaded_without_credentials(monkeypatch) -> None:

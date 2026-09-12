@@ -191,7 +191,11 @@ HISTORY_MODEL = {
 # 形状照抄 2026-09 真实抓包（同一个账号 19 个会话、248 条历史里出现过的全部类型），
 # 只有长链接做了保留原样的处理：它们本来就是公开的图片/视频地址。
 IMAGE_URL = 'https://img.alicdn.com/imgextra/i4/3123133723/O1CN01RSAPMB1dNBgdIEGcB_!!3123133723-53-xy_chat.heic'
-VIDEO_URL = 'http://wantu-xm4-xianyu-video-hz.oss-cn-hangzhou.aliyuncs.com/aus/xianyu_imvod_private/1700813367/5c13a4e.mp4?video_id=560521825334'
+VIDEO_URL = (
+    'http://wantu-xm4-xianyu-video-hz.oss-cn-hangzhou.aliyuncs.com/aus/xianyu_imvod_private/1700813367/'
+    '5c13a4e437ba4c27b700eceec0ee6ad7.mp4?video_id=560521825334'
+)
+VIDEO_COVER_URL = 'https://img.alicdn.com/imgextra/i3/3123133723/O1CN01rWDgAC1dNBgdXWzz4_!!3123133723-0-xy_chat.jpg'
 
 # contentType=2 图片：pics 可以有多张
 IMAGE_CONTENT = {
@@ -207,7 +211,7 @@ AUDIO_CONTENT = {'contentType': 3, 'audio': {'url': 'https://example.com/voice.a
 VIDEO_CONTENT = {
     'atUsers': [],
     'contentType': 4,
-    'video': {'duration': 0, 'height': 1440, 'snapshot': f'{VIDEO_URL}.jpg', 'url': VIDEO_URL, 'width': 1080},
+    'video': {'duration': 0, 'height': 1440, 'snapshot': VIDEO_COVER_URL, 'url': VIDEO_URL, 'width': 1080},
 }
 
 # contentType=6 文本卡片：title/content 里是带 HTML 的富文本

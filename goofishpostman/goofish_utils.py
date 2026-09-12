@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from msgpack import unpackb
 
-from .types import MTOP_APP_KEY, MessageContent, MessageInfo
+from .types import MTOP_APP_KEY, MessageContent, MessageInfo, MessageMedia
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -567,6 +567,48 @@ def extract_message_images(payload: dict) -> list[str]:
     return [url for _, url in _image_links(content.get('image') or {})]
 
 
+def extract_message_media(payload: dict) -> MessageMedia | None:
+    """取视频 / 语音的媒体信息（图片走 extract_message_images）。
+
+    真实形状：
+      contentType=4 → {'video': {'url': .., 'snapshot': .., 'duration': 0}}
+      contentType=3 → {'audio': {'url': .., 'duration': ..}}
+    认不出的类型返回 None，由调用方保留链接。
+    """
+    content = extract_message_content(payload)
+    if not content:
+        return None
+    match content.get('contentType'):
+        case 4:
+            video = content.get('video') or {}
+            url = _as_text(video.get('url'))
+            if not url:
+                return None
+            return MessageMedia(
+                kind='video', url=url, cover=_as_text(video.get('snapshot')), duration=_as_int(video.get('duration'))
+            )
+        case 3:
+            audio = content.get('audio') or {}
+            url = _as_text(audio.get('url'))
+            if not url:
+                return None
+            return MessageMedia(kind='audio', url=url, cover='', duration=_as_int(audio.get('duration')))
+        case _:
+            return None
+
+
+def to_milliseconds(duration: int) -> int:
+    """把报文里的时长换成一毫秒单位（飞书上传接口要毫秒）。
+
+    闲鱼这个字段的单位没有权威文档：实测几条真实视频给的都是 0，没有可参考的样本。
+    数值很小（<1000）时按秒处理，否则认为本来就是毫秒 —— 这个字段只影响飞书界面上
+    显示的那个时长，猜错的代价很小。
+    """
+    if duration <= 0:
+        return 0
+    return duration * 1000 if duration < 1000 else duration
+
+
 def is_silent_message(payload: dict) -> bool:
     """这条消息是否属于「只记录、不推送」的类型。
 
@@ -677,3 +719,12 @@ def _strip_html(value: str) -> str:
 def _as_text(value: Any) -> str:
     """只认字符串字段（报文里偶尔是数字），顺手去掉首尾空白。"""
     return value.strip() if isinstance(value, str) else ''
+
+
+def _as_int(value: Any) -> int:
+    """时长之类的数字字段：非数字一律当 0（当作"不知道"）。"""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int | float):
+        return int(value)
+    return int(value) if isinstance(value, str) and value.isdigit() else 0

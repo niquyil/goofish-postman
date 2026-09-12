@@ -39,6 +39,22 @@ class MessageContent(TypedDict):
     links: list[tuple[str, str]]
 
 
+class MessageMedia(TypedDict):
+    """图片之外的可上传媒体（视频 / 语音）。
+
+    图片是内嵌进卡片的，视频用飞书的 video 组件（也要 file_key），
+    语音卡片放不了、只能另发一条 audio 消息；两者都要先下载再上传换 key。
+    - kind：`video` / `audio`
+    - cover：视频封面图地址（语音为空串）
+    - duration：报文里的时长，单位不确定（见 to_milliseconds）
+    """
+
+    kind: str
+    url: str
+    cover: str
+    duration: int
+
+
 class DeliveryMethod(StrEnum):
     """配送方式，取值与闲鱼发布接口一致。"""
 

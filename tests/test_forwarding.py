@@ -13,6 +13,7 @@ from goofishpostman.supervisor import Supervisor
 
 from fixtures import (
     AROUSE_PAYLOAD,
+    AUDIO_CONTENT,
     IMAGE_CONTENT,
     IMAGE_URL,
     KEPT_TRADE_CARD_CONTENT,
@@ -20,6 +21,9 @@ from fixtures import (
     SESSION_ID,
     TIP_CONTENT,
     TRADE_CARD_CONTENT,
+    VIDEO_CONTENT,
+    VIDEO_COVER_URL,
+    VIDEO_URL,
     encrypted_record,
     plain_record,
     push_frame,
@@ -202,6 +206,27 @@ def test_other_trade_cards_are_recorded_but_not_pushed(tmp_dir, stub_decrypt) ->
 
     assert notifier.sent == []
     assert supervisor.messages[-1].text.startswith('[交易卡片]\n我已修改价格，等待你付款')
+
+
+def test_video_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
+    """视频消息要把媒体信息（地址/封面/时长）一并交给推送器去上传。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(supervisor, push_frame(encrypted_record(push_payload_with_content(VIDEO_CONTENT, '[视频]', 'video-1'))))
+
+    card = notifier.card_payloads[0]
+    assert card['content'] == f'[视频]\n{VIDEO_URL}'
+    assert card['media'] == {'kind': 'video', 'url': VIDEO_URL, 'cover': VIDEO_COVER_URL, 'duration': 0}
+    assert supervisor.messages[-1].text == f'[视频]\n{VIDEO_URL}'
+
+
+def test_audio_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
+    """语音消息同理（时长按秒给到卡片上做人读的说明）。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(supervisor, push_frame(encrypted_record(push_payload_with_content(AUDIO_CONTENT, '[语音]', 'audio-1'))))
+
+    card = notifier.card_payloads[0]
+    assert card['content'] == '[语音]\n时长 8 秒\nhttps://example.com/voice.amr'
+    assert card['media'] == {'kind': 'audio', 'url': 'https://example.com/voice.amr', 'cover': '', 'duration': 8}
 
 
 def test_extract_message_uid_extracted_from_real_payload() -> None:

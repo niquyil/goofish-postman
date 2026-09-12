@@ -48,10 +48,18 @@ class RecordingNotifier(FeishuNotifier):
         details: dict[str, str] | None = None,
         color: str = '',
         images: tuple[str, ...] = (),
+        media: dict | None = None,
     ) -> None:
         self.cards.append((title, content))
         self.card_payloads.append(
-            {'title': title, 'content': content, 'details': details or {}, 'color': color, 'images': list(images)}
+            {
+                'title': title,
+                'content': content,
+                'details': details or {},
+                'color': color,
+                'images': list(images),
+                'media': media,
+            }
         )
         self.sent.append(f'{title}\n{content}')
 

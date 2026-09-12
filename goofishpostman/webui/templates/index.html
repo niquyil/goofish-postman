@@ -1,0 +1,141 @@
+[% extends 'base.html' %]
+[% import '_macros.html' as ui %]
+
+[% block title %]闲鱼消息汇总 · 管理台[% endblock %]
+
+[% block body %]
+  <header class="topbar">
+    <h1>🐟 闲鱼消息汇总</h1>
+    <div class="topbar-right">
+      <span id="sse-state" class="pill pill-off">连接中…</span>
+      <button id="refresh" class="ghost" type="button">刷新</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card" id="notify-card">
+      <div class="card-head">
+        <h2>飞书推送</h2>
+        [% if notify.configured and notify.enabled %]
+          <span id="notify-state" class="pill pill-ok">已启用</span>
+        [% elif notify.configured %]
+          <span id="notify-state" class="pill pill-warn">已配置未启用</span>
+        [% else %]
+          <span id="notify-state" class="pill pill-off">未配置</span>
+        [% endif %]
+      </div>
+      <form id="notify-form" class="grid">
+        <label>
+          <span>机器人 UUID</span>
+          <input id="notify-uuid" type="text" value="[[ notify.uuid ]]" placeholder="open-apis/bot/v2/hook/ 后面那一段" autocomplete="off">
+        </label>
+        <label>
+          <span>签名密钥（可选）</span>
+          <input id="notify-secret" type="password" placeholder="留空表示不签名" autocomplete="new-password">
+        </label>
+        <label class="check">
+          <input id="notify-enabled" type="checkbox"[% if notify.enabled %] checked[% endif %]>
+          <span>启用推送</span>
+        </label>
+        <button type="submit">保存并生效</button>
+      </form>
+      [% if notify.configured %]
+        <p class="hint">已保存密钥：[[ '是' if notify.secret_set else '否' ]]</p>
+      [% endif %]
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>账号<span id="account-count" class="count">[[ accounts | length ]]</span></h2>
+        <div class="head-actions">
+          <button id="qr-open" type="button">📱 扫码添加</button>
+          <button id="toggle-add" class="ghost" type="button">+ 粘贴 Cookie</button>
+        </div>
+      </div>
+
+      <form id="add-form" class="grid hidden">
+        <label>
+          <span>备注名</span>
+          <input id="add-name" type="text" placeholder="例如：主力号" autocomplete="off">
+        </label>
+        <label class="wide">
+          <span>Cookie（登录 goofish.com 后从开发者工具复制完整字符串）</span>
+          <textarea id="add-cookie" rows="3" placeholder="unb=xxx; tracknick=xxx; _m_h5_tk=xxx; ..."></textarea>
+        </label>
+        <label class="check">
+          <input id="add-enabled" type="checkbox" checked>
+          <span>添加后立即开始监听</span>
+        </label>
+        <div class="actions">
+          <button type="submit">添加</button>
+          <button type="button" class="ghost" id="cancel-add">取消</button>
+        </div>
+      </form>
+
+      <div id="accounts" class="accounts" data-rendered>
+        [% for account in accounts %]
+          [[ ui.account_row(account, account.status_class, account.status_text, account.meta, account.problem) ]]
+        [% endfor %]
+        [% if not accounts %]
+          <p class="hint">还没有账号，点右上角「📱 扫码添加」或「+ 粘贴 Cookie」即可。</p>
+        [% endif %]
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>消息流</h2>
+        <span id="message-count" class="count">[[ messages | length ]]</span>
+      </div>
+      <ul id="messages" class="feed" data-rendered>
+        [% for item in messages %]
+          [[ ui.message_item(item) ]]
+        [% endfor %]
+        [% if not messages %]
+          <li class="empty">暂无消息</li>
+        [% endif %]
+      </ul>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>事件日志</h2>
+        <span id="event-count" class="count">[[ events | length ]]</span>
+      </div>
+      <ul id="events" class="feed feed-events" data-rendered>
+        [% for item in events %]
+          [[ ui.event_item(item) ]]
+        [% endfor %]
+        [% if not events %]
+          <li class="empty">暂无事件</li>
+        [% endif %]
+      </ul>
+    </section>
+  </main>
+
+  <div id="qr-modal" class="modal hidden">
+    <div class="modal-panel qr-panel">
+      <div class="modal-head">
+        <h2>扫码添加账号</h2>
+        <button id="qr-close" class="ghost" type="button">关闭</button>
+      </div>
+      <p class="hint">用手机闲鱼 App（左上角「扫一扫」）扫描下面的二维码，并在手机上确认登录。</p>
+      <div class="qr-box" id="qr-box">
+        <div id="qr-placeholder" class="qr-placeholder">正在获取二维码…</div>
+      </div>
+      <div class="qr-foot">
+        <span id="qr-status" class="pill pill-warn">准备中</span>
+        <button id="qr-refresh" class="ghost" type="button">刷新二维码</button>
+      </div>
+      <p id="qr-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <template id="account-template">[[ ui.account_row(None, 'pill-off', '已停止') ]]</template>
+  <template id="message-template">[[ ui.message_item(empty_item) ]]</template>
+  <template id="event-template">[[ ui.event_item(empty_item) ]]</template>
+
+  <script src="/static/app.js?v=[[ build ]]"></script>
+[% endblock %]

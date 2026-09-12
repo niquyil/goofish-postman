@@ -1,0 +1,18 @@
+[% extends 'base.html' %]
+
+[% block title %]登录 · 闲鱼消息汇总[% endblock %]
+[% block body_class %]login-body[% endblock %]
+
+[% block body %]
+  <form id="login-form" class="card login-card">
+    <h1>🐟 闲鱼消息汇总</h1>
+    <p class="hint">该管理台配置了访问令牌，请输入后继续。</p>
+    <label>
+      <span>访问令牌</span>
+      <input id="token" type="password" autocomplete="current-password" autofocus required>
+    </label>
+    <button type="submit">登录</button>
+    <p id="login-error" class="error hidden"></p>
+  </form>
+  <script src="/static/login.js?v=[[ build ]]"></script>
+[% endblock %]

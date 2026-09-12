@@ -1,0 +1,39 @@
+[% macro account_row(account, status_class, status_text, meta='', problem='') %]
+<article class="account"[% if account %] data-id="[[ account.id ]]"[% endif %]>
+  <div class="account-main">
+    <div class="account-title">
+      <strong class="account-name">[[ account.display_name if account else '' ]]</strong>
+      <span class="account-nickname">[[ account.nickname if account else '' ]]</span>
+      <span class="pill status [[ status_class ]]">[[ status_text ]]</span>
+    </div>
+    <div class="account-meta">[[ meta ]]</div>
+    [% if problem %]<div class="account-error">[[ problem ]]</div>[% endif %]
+  </div>
+  <div class="account-actions">
+    <label class="switch" title="启停监听">
+      <input type="checkbox" class="toggle"[% if account and account.enabled %] checked[% endif %]>
+      <span class="slider"></span>
+    </label>
+    <button type="button" class="ghost restart">重连</button>
+    <button type="button" class="ghost edit" title="替换登录 Cookie">改 Cookie</button>
+    <button type="button" class="ghost reset-nickname" title="清空本地缓存的昵称，等它下次发消息时重新学习">重置昵称</button>
+    <button type="button" class="danger remove">删除</button>
+  </div>
+</article>
+[% endmacro %]
+
+
+[% macro message_item(item) %]
+<li>
+  <span class="time">[[ item.at_text ]]</span>
+  <span class="text">[[ item.sender ]] → [[ item.receiver ]]：[[ item.text ]]</span>
+</li>
+[% endmacro %]
+
+
+[% macro event_item(item) %]
+<li class="[[ item.level ]]">
+  <span class="time">[[ item.at_text ]]</span>
+  <span class="text">[[ item.message ]]</span>
+</li>
+[% endmacro %]

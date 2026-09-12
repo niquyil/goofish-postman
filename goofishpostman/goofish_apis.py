@@ -1,22 +1,37 @@
-from hashlib import md5
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import partial
 from json import dumps
 from pathlib import Path
-from subprocess import PIPE, check_output
-from sys import stdout
+from subprocess import run
 from time import sleep, time
-from typing import List
-from urllib.parse import quote
+from typing import Any
 
 from loguru import logger
-from qrcode import QRCode
 from requests import Session
 
 from .cookies import Cookies
-from .goofish_utils import generate_device_id
+from .goofish_utils import generate_device_id, generate_sign
 from .headers import SEC_CH_UA, USER_AGENT
-from .types import Delivery, Price
+from .qrlogin import (
+    STATUS_CONFIRMED,
+    STATUS_EXPIRED,
+    STATUS_TEXT,
+    QrSession,
+    finish_qr_login,
+    poll_qr_login,
+    render_qrcode,
+    start_qr_login,
+)
+from .types import APP_KEY, MTOP_APP_KEY, Delivery, ImageInfo, Price
 
-_MTOP_HEADERS = {
+_HERE = Path(__file__).resolve().parent
+_SCRIPT_DIR = _HERE / 'script'
+_MINI_LOGIN_URL = 'https://passport.goofish.com/mini_login.htm'
+
+# ── mtop 接口公共部分 ─────────────────────────────────────────────────────────
+_MTOP_BASE_HEADERS = {
     'Accept': 'application/json',
     'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
     'Accept-Encoding': 'gzip, deflate, br, zstd',
@@ -33,6 +48,14 @@ _MTOP_HEADERS = {
     'User-Agent': USER_AGENT,
 }
 
+# 各接口与 _MTOP_BASE_HEADERS 的差异（get_default_location / get_publish_channel / get_token / upload_media 没有 Cache-Control）
+_MTOP_HEADER_OVERRIDES: dict[str, dict[str, str]] = {
+    'mtop.taobao.idlemessage.pc.login.token': {'Cache-Control': 'no-cache', 'Host': 'h5api.m.goofish.com'}
+}
+_MTOP_CACHE_HEADER = {'Cache-Control': 'no-cache'}
+# 这些接口的原始实现没带 Cache-Control / Pragma
+_MTOP_NO_CACHE_HEADER_APIS = frozenset({'mtop.taobao.idle.local.poi.get', 'mtop.taobao.idle.kgraph.property.recommend'})
+
 _PASSPORT_HEADERS = {
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
@@ -47,16 +70,106 @@ _PASSPORT_HEADERS = {
     'User-Agent': USER_AGENT,
 }
 
-_HERE = Path(__file__).resolve().parent
+
+@dataclass(frozen=True, slots=True)
+class MtopApi:
+    """一个 mtop 接口的固定参数，签名所需的 data 由调用方动态生成。"""
+
+    url: str
+    version: str
+    spm_cnt: str
+    spm_pre: str
+    log_id: str
+
+    @property
+    def api(self) -> str:
+        return self.url.split('/h5/')[1].split('/')[0]
+
+    def build_params(self, data: str, timestamp: str, sign: str) -> dict[str, str]:
+        return {
+            'jsv': '2.7.2',
+            'appKey': MTOP_APP_KEY,
+            't': timestamp,
+            'sign': sign,
+            'v': self.version,
+            'type': 'originaljson',
+            'accountSite': 'xianyu',
+            'dataType': 'json',
+            'timeout': '20000',
+            'api': self.api,
+            'sessionOption': 'AutoLoginOnly',
+            'spm_cnt': self.spm_cnt,
+            'spm_pre': self.spm_pre,
+            'log_id': self.log_id,
+        }
+
+    def build_headers(self) -> dict[str, str]:
+        headers = _MTOP_BASE_HEADERS | _MTOP_HEADER_OVERRIDES.get(self.api, {})
+        if self.api not in _MTOP_NO_CACHE_HEADER_APIS:
+            headers = headers | _MTOP_CACHE_HEADER
+        return headers
 
 
-def _gen_tfstk(timeout: int = 15) -> str:
-    script = _HERE / 'utils' / 'tfstk.js'
+API = {
+    'get_token': MtopApi(
+        url='https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.login.token/1.0/',
+        version='1.0',
+        spm_cnt='a21ybx.im.0.0',
+        spm_pre='a21ybx.item.want.1.14ad3da6ALVq3n',
+        log_id='14ad3da6ALVq3n',
+    ),
+    'refresh_token': MtopApi(
+        url='https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.loginuser.get/1.0/',
+        version='1.0',
+        spm_cnt='a21ybx.im.0.0',
+        spm_pre='a21ybx.item.want.1.12523da6waCtUp',
+        log_id='12523da6waCtUp',
+    ),
+    'item_detail': MtopApi(
+        url='https://h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail/1.0/',
+        version='1.0',
+        spm_cnt='a21ybx.im.0.0',
+        spm_pre='a21ybx.item.want.1.12523da6waCtUp',
+        log_id='12523da6waCtUp',
+    ),
+    'publish_channel': MtopApi(
+        url='https://h5api.m.goofish.com/h5/mtop.taobao.idle.kgraph.property.recommend/2.0/',
+        version='2.0',
+        spm_cnt='a21ybx.publish.0.0',
+        spm_pre='a21ybx.item.sidebar.1.67321598K9Vgx8',
+        log_id='67321598K9Vgx8',
+    ),
+    'publish': MtopApi(
+        url='https://h5api.m.goofish.com/h5/mtop.idle.pc.idleitem.publish/1.0/',
+        version='1.0',
+        spm_cnt='a21ybx.publish.0.0',
+        spm_pre='a21ybx.home.sidebar.1.46413da6EPl7v5',
+        log_id='46413da6EPl7v5',
+    ),
+    'default_location': MtopApi(
+        url='https://h5api.m.goofish.com/h5/mtop.taobao.idle.local.poi.get/1.0/',
+        version='1.0',
+        spm_cnt='a21ybx.publish.0.0',
+        spm_pre='a21ybx.item.sidebar.1.38262218ame5nr',
+        log_id='38262218ame5nr',
+    ),
+}
+
+# 鉴权类接口返回的 Set-Cookie 需要先清掉本地同名 cookie（domain='' / path='/'）才会生效
+_TOKEN_COOKIE_APIS = frozenset({API['get_token'].api, API['refresh_token'].api})
+
+api = partial(API.__getitem__)
+
+
+def generate_tfstk(timeout: int = 15) -> str:
+    """执行逆向出的 tfstk.js 取回 tfstk cookie 值（需要本机 node）。"""
+    script = _SCRIPT_DIR / 'tfstk.js'
     if not script.exists():
         return ''
     try:
-        return check_output(args=['node', str(script)], timeout=timeout, stderr=PIPE).decode().strip()
-    except Exception as e:
+        result = run(['node', str(script)], capture_output=True, timeout=timeout, check=False)
+        return result.stdout.decode().strip()
+    except Exception as e:  # noqa: BLE001 - 拿不到 tfstk 不阻塞登录流程
         logger.error(e)
         return ''
 
@@ -71,59 +184,45 @@ def build_initial_cookies() -> Session:
     if cna:
         session.cookies.set(name='cna', value=cna, domain='.goofish.com', path='/')
 
-    for api in ('mtop.taobao.idlehome.home.webpc.feed', 'mtop.gaia.nodejs.gaia.idle.data.gw.v2.index.get'):
+    for api_name in ('mtop.taobao.idlehome.home.webpc.feed', 'mtop.gaia.nodejs.gaia.idle.data.gw.v2.index.get'):
         session.post(
-            url=f'https://h5api.m.goofish.com/h5/{api}/1.0/',
+            url=f'https://h5api.m.goofish.com/h5/{api_name}/1.0/',
             params={
                 'jsv': '2.7.2',
-                'appKey': '34839810',
+                'appKey': MTOP_APP_KEY,
                 't': str(int(time() * 1000)),
                 'sign': '',
                 'v': '1.0',
                 'type': 'originaljson',
                 'dataType': 'json',
                 'timeout': '20000',
-                'api': api,
+                'api': api_name,
                 'sessionOption': 'AutoLoginOnly',
                 'spm_cnt': 'a21ybx.home.0.0',
             },
-            data='data=%7B%7D',
-            headers=_MTOP_HEADERS,
+            data={'data': '{}'},
+            headers=_MTOP_BASE_HEADERS,
             timeout=10,
         )
 
-    tfstk = _gen_tfstk()
+    tfstk = generate_tfstk()
     if tfstk:
         session.cookies.set(name='tfstk', value=tfstk, domain='.goofish.com', path='/')
 
     return session
 
 
-def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode: bool = True) -> Goofish:
-    """扫码登录闲鱼，返回已登录的 XianyuApis 实例。
-
-    流程：
-    1. build_initial_cookies() 拿基础 cookie
-    2. 请求 passport 加载 mini_login 页面拿 passport 域 cookie
-    3. generate.do 获取二维码 URL
-    4. 终端展示二维码（需 qrcode 库）或打印 URL
-    5. 轮询 query.do 等待扫码确认
-    6. login_token/login.do 完成登录
-    7. 返回 XianyuApis 实例
-    """
-    # ── 1. 基础 cookie ──
+def create_login_session() -> QrSession:
+    """扫码第一步：建会话并加载 mini_login 页面，拿到 XSRF-TOKEN 等。"""
     session = build_initial_cookies()
-
     cna = (
         session.cookies.get(name='cna', domain='.goofish.com')
         or session.cookies.get(name='cna', domain='.mmstat.com')
         or ''
     )
-    cookie2 = session.cookies.get(name='cookie2', domain='.goofish.com') or ''
 
-    # ── 2. 加载 passport mini_login 页面拿 XSRF-TOKEN / _tb_token_ 等 ──
     session.get(
-        url='https://passport.goofish.com/mini_login.htm',
+        url=_MINI_LOGIN_URL,
         params={
             'lang': 'zh_cn',
             'appName': 'xianyu',
@@ -147,316 +246,100 @@ def qrcode_login(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode
         timeout=15,
     )
 
-    csrf_token = session.cookies.get(name='XSRF-TOKEN', domain='passport.goofish.com') or ''
-    # tb_token = session.cookies.get(name='_tb_token_', domain='.goofish.com') or ''
-
-    # ── 3. 生成二维码 ──
-    gen_params = {
-        'appName': 'xianyu',
-        'fromSite': '77',
-        'appEntrance': 'web',
-        '_csrf_token': csrf_token,
-        'umidToken': '',
-        'hsiz': cookie2,
-        'bizParams': f'taobaoBizLoginFrom=web&renderRefer={quote("https://www.goofish.com/")}',
-        'mainPage': 'false',
-        'isMobile': 'false',
-        'lang': 'zh_CN',
-        'returnUrl': '',
-        'umidTag': 'SERVER',
-    }
-    gen_resp = session.get(
-        url='https://passport.goofish.com/newlogin/qrcode/generate.do',
-        params=gen_params,
-        headers=_PASSPORT_HEADERS | {'Referer': 'https://passport.goofish.com/mini_login.htm'},
-        timeout=10,
-    ).json()
-
-    gen_data = gen_resp['content']['data']
-    qr_url = gen_data['codeContent']
-    qr_t = gen_data['t']
-    qr_ck = gen_data['ck']
-
-    print(f'[qrcode_login] QR URL: {qr_url}')
-    print('[qrcode_login] Scan with XianYu APP (top-left corner -> scan)')
-
-    # 终端打印二维码（用半块字符 ▀▄█ 使其接近正方形）
-    if show_qrcode:
-        try:
-            qr = QRCode(border=1, box_size=1)
-            qr.add_data(qr_url)
-            qr.make()
-            matrix = qr.get_matrix()
-            rows = len(matrix)
-            lines = []
-            for r in range(0, rows, 2):
-                line = ''
-                for cookie in range(len(matrix[r])):
-                    top = matrix[r][cookie]
-                    bot = matrix[r + 1][cookie] if r + 1 < rows else False
-                    if top and bot:
-                        line += '█'  # █ 上下都黑
-                    elif top and not bot:
-                        line += '▀'  # ▀ 上黑下白
-                    elif not top and bot:
-                        line += '▄'  # ▄ 上白下黑
-                    else:
-                        line += ' '  #   上下都白
-                lines.append(line)
-            qr_str = '\n'.join(lines) + '\n'
-            stdout.buffer.write(qr_str.encode(encoding='utf-8', errors='replace'))
-            stdout.buffer.flush()
-        except ImportError:
-            print('[qrcode_login] pip install qrcode to show QR in terminal')
-
-    # ── 4. 轮询扫码状态 ──
-    query_url = 'https://passport.goofish.com/newlogin/qrcode/query.do'
-    query_base = {
-        'appName': 'xianyu',
-        'fromSite': '77',
-        'appEntrance': 'web',
-        '_csrf_token': csrf_token,
-        'umidToken': '',
-        'hsiz': cookie2,
-        'bizParams': f'taobaoBizLoginFrom=web&renderRefer={quote("https://www.goofish.com/")}',
-        'mainPage': 'false',
-        'isMobile': 'false',
-        'lang': 'zh_CN',
-        'returnUrl': '',
-        'umidTag': 'SERVER',
-        'navlanguage': 'en',
-        'navUserAgent': USER_AGENT,
-        'navPlatform': 'Win32',
-        'isIframe': 'true',
-        'documentReferer': 'https://www.goofish.com/',
-        'defaultView': 'sms',
-        'deviceId': cna,
-    }
-    deadline = time() + timeout
-    login_token = None
-    last_status = ''
-
-    while time() < deadline:
-        body = {**query_base, 't': str(qr_t), 'ck': qr_ck}
-        resp = session.post(
-            url=f'{query_url}?appName=xianyu&fromSite=77',
-            data=body,
-            headers=_PASSPORT_HEADERS
-            | {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Origin': 'https://passport.goofish.com',
-                'Referer': 'https://passport.goofish.com/mini_login.htm',
-            },
-            timeout=10,
-        )
-        qdata = resp.json()['content']['data']
-        status = qdata.get('qrCodeStatus', '')
-
-        if status != last_status:
-            remaining = int(deadline - time())
-            status_map = {
-                'NEW': 'Waiting for scan',
-                'SCANNED': 'Scanned, confirm on phone',
-                'CONFIRMED': 'Confirmed',
-                'EXPIRED': 'QR expired',
-            }
-            desc = status_map.get(status, status)
-            print(f'[qrcode_login] [{status}] {desc} ({remaining}s left)')
-            last_status = status
-
-        if status == 'CONFIRMED':
-            login_token = qdata.get('token') or qdata.get('lgToken')
-            # CONFIRMED 响应的 Set-Cookie 里已经包含了 sgcookie/unb/tracknick/csg
-            break
-        elif status == 'EXPIRED':
-            raise TimeoutError('二维码已过期，请重新调用 qrcode_login()')
-
-        sleep(poll_interval)
-
-    if not login_token:
-        # 如果没有 token，可能 Set-Cookie 已经完成登录（某些版本没有 token 字段）
-        if session.cookies.get('unb'):
-            print('[qrcode_login] 登录成功（通过 Set-Cookie）')
-        else:
-            raise TimeoutError('扫码超时，未完成登录')
-    else:
-        # ── 5. login_token/login.do 完成登录 ──
-        login_resp = session.post(
-            url='https://passport.goofish.com/login_token/login.do',
-            params={
-                'token': login_token,
-                'subFlow': 'DIALOG_CHECK_LOGIN_RPC',
-                'nextCode': '0018',
-                'bizScene': 'qrcode',
-                'confirm': 'true',
-            },
-            data={'deviceId': cna},
-            headers=_PASSPORT_HEADERS
-            | {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Origin': 'https://passport.goofish.com',
-                'Referer': 'https://passport.goofish.com/mini_login.htm',
-            },
-            timeout=10,
-        )
-        print('[qrcode_login] login_token 请求完成, status:', login_resp.status_code)
-
-    # ── 6. 刷新 mtop cookie（登录后 _m_h5_tk 会变） ──
-    session.post(
-        url='https://h5api.m.goofish.com/h5/mtop.idle.web.user.page.nav/1.0/',
-        params={
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time() * 1000)),
-            'sign': '',
-            'v': '1.0',
-            'type': 'originaljson',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.idle.web.user.page.nav',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.home.0.0',
-        },
-        data='data=%7B%7D',
-        headers=_MTOP_HEADERS,
-        timeout=10,
+    return QrSession(
+        session=session,
+        device_id=generate_device_id(),
+        cna=cna,
+        csrf_token=session.cookies.get(name='XSRF-TOKEN', domain='passport.goofish.com') or '',
     )
 
-    # ── 7. 组装 XianyuApis ──
-    unb = session.cookies.get('unb', domain='.goofish.com') or ''
-    tracknick = session.cookies.get('tracknick', domain='.goofish.com') or ''
-    print(f'[qrcode_login] 登录成功！用户: {tracknick} (unb={unb})')
 
-    cookies_dict = {}
-    for cookie in session.cookies:
-        if cookie.domain and ('.goofish.com' in cookie.domain or '.mmstat.com' in cookie.domain):
-            cookies_dict[cookie.name] = cookie.value
+def login_with_qrcode(poll_interval: float = 3.0, timeout: float = 120.0, show_qrcode: bool = True):
+    """扫码登录闲鱼（命令行用），返回已登录的 Goofish 实例。
 
-    device_id = generate_device_id(unb)
-    api = Goofish(cookies_dict, device_id)
-    api.session = session
-    return api
+    实现已迁到 qrlogin 模块；Web 端请直接用那里的分步接口：
+    start_qr_login() / poll_qr_login() / finish_qr_login()，配合本模块的 create_login_session()。
+    """
+    from .qrlogin import build_session_cookie_string
+
+    state = start_qr_login(create_login_session())
+    print(f'[login_with_qrcode] QR URL: {state.qr_url}')
+    print('[login_with_qrcode] 用闲鱼 App 扫码（左上角 -> 扫一扫）')
+    if show_qrcode:
+        render_qrcode(state.qr_url)
+
+    deadline = time() + timeout
+    last_status = ''
+    while time() < deadline:
+        status = poll_qr_login(state)
+        if status != last_status:
+            print(f'[login_with_qrcode] [{status}] {STATUS_TEXT.get(status, status)} ({int(deadline - time())}s left)')
+            last_status = status
+        if status == STATUS_CONFIRMED:
+            break
+        if status == STATUS_EXPIRED:
+            raise TimeoutError('二维码已过期，请重新调用 login_with_qrcode()')
+        sleep(poll_interval)
+    else:
+        raise TimeoutError('扫码超时，未完成登录')
+
+    info = finish_qr_login(state)
+    print(f'[login_with_qrcode] 登录成功！用户: {info["tracknick"]} (unb={info["unb"]})')
+    login = Goofish(cookies=Cookies.from_str(build_session_cookie_string(state.session)), device_id=state.device_id)
+    login.session = state.session
+    return login
 
 
 class Goofish:
-    login_url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.login.token/1.0/'
     upload_media_url = 'https://stream-upload.goofish.com/api/upload.api'
-    refresh_token_url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idlemessage.pc.loginuser.get/1.0/'
-    item_detail_url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail/1.0/'
     reset_login_info_url = 'https://passport.goofish.com/newlogin/hasLogin.do'
 
-    def __init__(self, cookies, device_id):
+    def __init__(self, cookies, device_id: str):
         self.session = Session()
         self.session.cookies.update(cookies)
         self.device_id = device_id
-        # self.cookies = {}
 
     @staticmethod
     def sign(timestamp: str, token: str, data: str) -> str:
-        return md5(f'{token}&{timestamp}&34839810&{data}'.encode()).hexdigest()
+        return generate_sign(timestamp, token, data)
 
     @property
     def cookies(self) -> Cookies:
         return Cookies.from_session(self.session)
 
-    def get_default_location(self):
-        headers = {
-            'Accept': 'application/json',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Eagleeye-Userdata': 'spm-cnt=a21ybx',
-            'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'User-Agent': USER_AGENT,
-        }
-        url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idle.local.poi.get/1.0/'
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time()) * 1000),
-            'sign': '',
-            'v': '1.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.taobao.idle.local.poi.get',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.publish.0.0',
-            'spm_pre': 'a21ybx.item.sidebar.1.38262218ame5nr',
-            'log_id': '38262218ame5nr',
-        }
-        data = '{"longitude":118.78248347393424,"latitude":31.91629189813543}'
-        token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
-        return self.session.post(url=url, data={'data': data}, headers=headers, params=params).json()
+    @property
+    def mtop_token(self) -> str:
+        return self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
 
-    def get_item_info(self, item_id):
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time()) * 1000),
-            'sign': '',
-            'v': '1.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.taobao.idle.pc.detail',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.im.0.0',
-            'spm_pre': 'a21ybx.item.want.1.12523da6waCtUp',
-            'log_id': '12523da6waCtUp',
-        }
-        data = f'{{"itemId":"{item_id}"}}'
-        token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
-        return self.session.post(url=self.item_detail_url, data={'data': data}, params=params).json()
+    def _call_mtop(self, spec: MtopApi, data: dict[str, Any] | str) -> dict[str, Any]:
+        """mtop 接口统一出入参：自动带时间戳、mtop token、sign，并清理过期 cookie。"""
+        if not isinstance(data, str):
+            data = dumps(data, separators=(',', ':'))
+        timestamp = str(int(time() * 1000))
+        params = spec.build_params(data=data, timestamp=timestamp, sign=self.sign(timestamp, self.mtop_token, data))
+        response = self.session.post(
+            url=spec.url, data={'data': data}, headers=spec.build_headers(), params=params, timeout=20
+        )
 
-    def get_publish_channel(self, title: str, images_info: list):
-        headers = {
-            'Accept': 'application/json',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'User-Agent': USER_AGENT,
-        }
-        url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idle.kgraph.property.recommend/2.0/'
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time()) * 1000),
-            'sign': '',
-            'v': '2.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.taobao.idle.kgraph.property.recommend',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.publish.0.0',
-            'spm_pre': 'a21ybx.item.sidebar.1.67321598K9Vgx8',
-            'log_id': '67321598K9Vgx8',
-        }
+        if spec.api in _TOKEN_COOKIE_APIS:
+            for key in list(self.session.cookies):
+                if key.name in response.cookies and key.domain == '' and key.path == '/':
+                    self.session.cookies.clear(domain=key.domain, path=key.path, name=key.name)
+
+        result = response.json()
+        if 'ret' in result and '令牌过期' in result['ret'][0]:
+            return self._call_mtop(spec, data)
+        return result
+
+    def get_default_location(self) -> dict[str, Any]:
+        return self._call_mtop(
+            api('default_location'), {'longitude': 118.78248347393424, 'latitude': 31.91629189813543}
+        )
+
+    def get_item_info(self, item_id: str) -> dict[str, Any]:
+        return self._call_mtop(api('item_detail'), {'itemId': item_id})
+
+    def get_publish_channel(self, title: str, images_info: list[ImageInfo]) -> dict[str, Any]:
         data = {
             'title': title,
             'lockCpv': False,
@@ -464,111 +347,23 @@ class Goofish:
             'publishScene': 'mainPublish',
             'scene': 'newPublishChoice',
             'description': title,
-            'imageInfos': [],
+            'imageInfos': [image.to_image_info_do() for image in images_info],
             'uniqueCode': '1775905618164677',
         }
-        for image_info in images_info:
-            data['imageInfos'].append(
-                {
-                    'extraInfo': {'isH': 'false', 'isT': 'false', 'raw': 'false'},
-                    'isQrCode': False,
-                    'url': image_info['url'],
-                    'heightSize': image_info['height'],
-                    'widthSize': image_info['width'],
-                    'major': True,
-                    'type': 0,
-                    'status': 'done',
-                }
-            )
-        data = dumps(data, separators=(',', ':'))
-        token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
-        return self.session.post(url=url, data={'data': data}, headers=headers, params=params).json()
+        return self._call_mtop(api('publish_channel'), data)
 
-    def get_token(self):
-        headers = {
-            'Accept': 'application/json',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Host': 'h5api.m.goofish.com',
-            'Origin': 'https://www.goofish.com',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Site': 'same-site',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Dest': 'empty',
-            'User-Agent': USER_AGENT,
-        }
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time()) * 1000),
-            'sign': '',
-            'v': '1.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.taobao.idlemessage.pc.login.token',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.im.0.0',
-            'spm_pre': 'a21ybx.item.want.1.14ad3da6ALVq3n',
-            'log_id': '14ad3da6ALVq3n',
-        }
-        data = f'{{"appKey":"444e9908a51d1cb236a27862abc769c9","deviceId":"{self.device_id}"}}'
-        token = self.session.cookies['_m_h5_tk'].split('_')[0]
-        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
-        response = self.session.post(url=self.login_url, data={'data': data}, headers=headers, params=params)
-        for response_cookie_key in response.cookies.get_dict().keys():
-            if response_cookie_key in self.session.cookies.get_dict().keys():
-                for key in self.session.cookies:
-                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
-                        self.session.cookies.clear(domain=key.domain, path=key.path, name=key.name)
-                        break
-        res_json = response.json()
-        if 'ret' in res_json and '令牌过期' in res_json['ret'][0]:
-            return self.get_token()
-        return res_json
+    def get_token(self) -> dict[str, Any]:
+        # 注意：这里的 appKey 是长连接的 app-key，不是 mtop 的 appKey
+        return self._call_mtop(api('get_token'), {'appKey': APP_KEY, 'deviceId': self.device_id})
 
-    def publish(self, images_path: List[str], goods_desc: str, price: Price | None, delivery: Delivery):
-        headers = {
-            'Accept': 'application/json',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'User-Agent': USER_AGENT,
-        }
-        url = 'https://h5api.m.goofish.com/h5/mtop.idle.pc.idleitem.publish/1.0/'
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time()) * 1000),
-            'sign': '',
-            'v': '1.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.idle.pc.idleitem.publish',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.publish.0.0',
-            'spm_pre': 'a21ybx.home.sidebar.1.46413da6EPl7v5',
-            'log_id': '46413da6EPl7v5',
-        }
-        data = {
+    def refresh_token(self) -> dict[str, Any]:
+        return self._call_mtop(api('refresh_token'), {})
+
+    def publish(
+        self, images_path: list[str], goods_desc: str, price: Price | None = None, delivery: Delivery | None = None
+    ) -> dict[str, Any]:
+        delivery = delivery or Delivery(method='无需邮寄')
+        data: dict[str, Any] = {
             'freebies': False,
             'itemTypeStr': 'b',
             'quantity': '1',
@@ -576,65 +371,31 @@ class Goofish:
             'imageInfoDOList': [],
             'itemTextDTO': {'desc': goods_desc, 'title': goods_desc, 'titleDescSeparate': False},
             'itemLabelExtList': [],
-            'itemPriceDTO': {},
+            'itemPriceDTO': price.to_cents() if price else {},
             'userRightsProtocols': [{'enable': False, 'serviceCode': 'SKILL_PLAY_NO_MIND'}],
-            'itemPostFeeDTO': {'canFreeShipping': False, 'supportFreight': False, 'onlyTakeSelf': False},
+            'itemPostFeeDTO': delivery.to_post_fee(),
             'itemAddrDTO': {},
-            'defaultPrice': False,
+            'defaultPrice': price is None or not price.to_cents(),
             'itemCatDTO': {},
             'uniqueCode': '1775897582791680',
             'sourceId': 'pcMainPublish',
             'bizcode': 'pcMainPublish',
             'publishScene': 'pcMainPublish',
         }
-        images_info = []
-        if images_path:
-            for image_path in images_path:
-                image_object = self.upload_media(image_path)['object']
-                width, height = map(int, image_object['pix'].split('x'))
-                image_info = {'url': image_object['url'], 'height': height, 'width': width}
-                images_info.append(image_info)
-                data['imageInfoDOList'].append(
-                    {
-                        'extraInfo': {'isH': 'false', 'isT': 'false', 'raw': 'false'},
-                        'isQrCode': False,
-                        'url': image_info['url'],
-                        'heightSize': image_info['height'],
-                        'widthSize': image_info['width'],
-                        'major': True,
-                        'type': 0,
-                        'status': 'done',
-                    }
-                )
-        match delivery.method:
-            case '包邮':
-                data['itemPostFeeDTO']['canFreeShipping'] = True
-                data['itemPostFeeDTO']['supportFreight'] = True
-            case '按距离计费':
-                data['itemPostFeeDTO']['supportFreight'] = True
-                data['itemPostFeeDTO']['templateId'] = '-100'
-            case '一口价':
-                data['itemPostFeeDTO']['supportFreight'] = True
-                data['itemPostFeeDTO']['postPriceInCent'] = str(int(delivery.price * 100))
-                data['itemPostFeeDTO']['templateId'] = '0'
-            case '无需邮寄':
-                data['itemPostFeeDTO']['templateId'] = '0'
-            case _:
-                raise ValueError('Invalid delivery choice')
+
+        images_info = [self.upload_image(image_path) for image_path in images_path or []]
+        data['imageInfoDOList'] = [image.to_image_info_do() for image in images_info]
+
+        # 注意：接口读的是 itemPostFeeDTO.onlyTakeSelf，原实现写到了 body 根部的 onlyTakeSelf（无效字段），
+        # 这里保持原样以免改变线上行为
         if delivery.self_pickup_accepted:
             data['onlyTakeSelf'] = True
-        if price:
-            if price.current > 0:
-                data['itemPriceDTO']['priceInCent'] = str(int(price.current * 100))
-            if price.original > 0:
-                data['itemPriceDTO']['origPriceInCent'] = str(int(price.original * 100))
-        else:
-            data['defaultPrice'] = True
+
         channel_res = self.get_publish_channel(goods_desc, images_info)
         for card in channel_res['data']['cardList']:
             card_data = card['cardData']
-            for card_value in card_data['valuesList'] if 'valuesList' in card_data.keys() else []:
-                if 'isClicked' in card_value.keys() and card_value['isClicked']:
+            for card_value in card_data.get('valuesList', []):
+                if card_value.get('isClicked'):
                     data['itemLabelExtList'].append(
                         {
                             'channelCateName': card_value['catName'],
@@ -658,92 +419,37 @@ class Goofish:
                     )
                     break
 
+        category = channel_res['data']['categoryPredictResult']
         data['itemCatDTO'] = {
-            'catId': str(channel_res['data']['categoryPredictResult']['catId']),
-            'catName': str(channel_res['data']['categoryPredictResult']['catName']),
-            'channelCatId': str(channel_res['data']['categoryPredictResult']['channelCatId']),
-            'tbCatId': str(channel_res['data']['categoryPredictResult']['tbCatId']),
+            'catId': str(category['catId']),
+            'catName': str(category['catName']),
+            'channelCatId': str(category['channelCatId']),
+            'tbCatId': str(category['tbCatId']),
         }
 
-        location_res = self.get_default_location()['data']['commonAddresses'][0]
+        location = self.get_default_location()['data']['commonAddresses'][0]
         data['itemAddrDTO'] = {
-            'area': location_res['area'],
-            'city': location_res['city'],
-            'divisionId': location_res['divisionId'],
-            'gps': f'{location_res["longitude"]},{location_res["latitude"]}',
-            'poiId': location_res['poiId'],
-            'poiName': location_res['poi'],
-            'prov': location_res['prov'],
+            'area': location['area'],
+            'city': location['city'],
+            'divisionId': location['divisionId'],
+            'gps': f'{location["longitude"]},{location["latitude"]}',
+            'poiId': location['poiId'],
+            'poiName': location['poi'],
+            'prov': location['prov'],
         }
 
-        data = dumps(data, separators=(',', ':'))
-        token = self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
-        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
-        return self.session.post(url=url, data={'data': data}, headers=headers, params=params).json()
+        return self._call_mtop(api('publish'), data)
 
-    def refresh_token(self):
-        headers = {
-            'Accept': 'application/json',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'User-Agent': USER_AGENT,
-        }
-        params = {
-            'jsv': '2.7.2',
-            'appKey': '34839810',
-            't': str(int(time()) * 1000),
-            'v': '1.0',
-            'type': 'originaljson',
-            'accountSite': 'xianyu',
-            'dataType': 'json',
-            'timeout': '20000',
-            'api': 'mtop.taobao.idlemessage.pc.loginuser.get',
-            'sessionOption': 'AutoLoginOnly',
-            'spm_cnt': 'a21ybx.im.0.0',
-            'spm_pre': 'a21ybx.item.want.1.12523da6waCtUp',
-            'log_id': '12523da6waCtUp',
-        }
-        data = '{}'
-        token = self.session.cookies.get('_m_h5_tk').split('_')[0]
-        params['sign'] = self.sign(timestamp=params['t'], token=token, data=data)
-        response = self.session.post(url=self.refresh_token_url, data={'data': data}, headers=headers, params=params)
-        for response_cookie_key in response.cookies:
-            if response_cookie_key in self.session.cookies:
-                for key in self.session.cookies:
-                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
-                        del self.session.cookies[key]
-                        break
-        return response.json()
-
-    def upload_media(self, media_path: str):
-        headers = {
-            'Accept': '*/*',
-            'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6',
-            'Cache-Control': 'no-cache',
-            'Origin': 'https://www.goofish.com',
-            'Pragma': 'no-cache',
-            'Priority': 'u=1, i',
-            'Referer': 'https://www.goofish.com/',
-            'Sec-Ch-Ua': SEC_CH_UA,
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'User-Agent': USER_AGENT,
-        }
+    def upload_media(self, media_path: str) -> dict[str, Any]:
+        # requests 用 multipart 时会自己生成 Content-Type，这里显式去掉模板里的表单类型
+        headers = {key: value for key, value in _MTOP_BASE_HEADERS.items() if key != 'Content-Type'} | {'Accept': '*/*'}
         params = {'floderId': '0', 'appkey': 'xy_chat', '_input_charset': 'utf-8'}
         with open(media_path, 'rb') as f:
             files = {'file': (Path(media_path).name, f, 'image/png')}
             return self.session.post(url=self.upload_media_url, headers=headers, files=files, params=params).json()
+
+    def upload_image(self, media_path: str) -> ImageInfo:
+        """上传本地图片，返回发布接口需要的 ImageInfo。"""
+        image_object = self.upload_media(media_path)['object']
+        width, height = map(int, image_object['pix'].split('x'))
+        return ImageInfo(url=image_object['url'], width=width, height=height)

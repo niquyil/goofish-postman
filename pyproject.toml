@@ -2,26 +2,55 @@
 name = "GoofishPostman"
 version = "0.1.0"
 requires-python = ">=3.14"
+# 依赖下限统一钉在当前实际安装（uv.lock 里）的版本上：只写 >= 不写 ==，
+# 这样别人装到的是同版本或更新版，升级时改这里的数字即可。
 dependencies = [
-    "aiohttp>=3.14.1",
+    "anyio>=4.15.1",  # web.py 用它把阻塞调用丢进线程池（fastapi 也会带进来，但自己直接导入的要显式声明）
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",  # 飞书推送的 HTTP 客户端（accounts.py / sender.py），属于运行依赖
+    "jinja2>=3.1.6",
     "loguru>=0.7.3",
-    "pydantic>=2.13.4",
-    "pyexecjs>=1.5.1",
-    "python-dotenv>=1.2.2",
-    "qrcode>=8.2",
+    "msgpack>=1.2.2",  # 闲鱼消息体是 MessagePack（原 goofish.js 里那 500 行就是它的混淆实现）
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "qrcode[pil]>=8.2",  # [pil] 会带上 pillow：qrcode 渲染 PNG 时 import PIL，缺了直接 ModuleNotFoundError
     "requests>=2.34.2",
-    "typing-extensions>=4.15.0",
-    "websockets>=16.0",
+    "uvicorn>=0.52.4",
+    "websockets>=17.1",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15.17",
+    "pytest>=9.1.1",
+    "ruff>=0.16.7",
 ]
+
+# 有 build-system，`uv sync` 才会把 goofishpostman 装进虚拟环境（可编辑安装），
+# 否则只能靠 `python -m pytest` 把当前目录塞进 sys.path 才能 import 到
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["goofishpostman"]
 
 [tool.ruff]
 line-length = 120
+# 这些目录在受限环境里无读取权限，且与源码无关
+exclude = [".venv", ".pytest_cache", ".tests-tmp", ".ruff_cache", ".git", ".idea"]
+
+[tool.ruff.lint]
+# 不写 select：直接用 ruff 0.16 起的默认规则集（全部稳定规则）。
+# 单独配置的只有分组顺序相关的两项，见下。
+[tool.ruff.lint.isort]
+# 与 format.skip-magic-trailing-comma 冲突的那个选项，显式关掉
+split-on-trailing-comma = false
+# tests/ 里的 fixtures / helpers 是测试自带的模块，单独成组排在最后
+known-local-folder = ["fixtures", "helpers"]
 
 [tool.ruff.format]
 quote-style = "single"
 skip-magic-trailing-comma = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

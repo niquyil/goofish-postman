@@ -33,6 +33,14 @@
           <span>签名密钥（可选）</span>
           <input id="notify-secret" type="password" placeholder="留空表示不签名" autocomplete="new-password">
         </label>
+        <label>
+          <span>应用 ID（可选，用于内嵌图片）</span>
+          <input id="notify-app-id" type="text" value="[[ notify.app_id ]]" placeholder="cli_ 开头，自建应用才有" autocomplete="off">
+        </label>
+        <label>
+          <span>应用密钥</span>
+          <input id="notify-app-secret" type="password" placeholder="留空表示不上传图片" autocomplete="new-password">
+        </label>
         <label class="check">
           <input id="notify-enabled" type="checkbox"[% if notify.enabled %] checked[% endif %]>
           <span>启用推送</span>
@@ -40,7 +48,10 @@
         <button type="submit">保存并生效</button>
       </form>
       [% if notify.configured %]
-        <p class="hint">已保存密钥：[[ '是' if notify.secret_set else '否' ]]</p>
+        <p class="hint">
+          已保存密钥：[[ '是' if notify.secret_set else '否' ]]
+          ｜ 图片内嵌：[[ '已开启' if notify.can_upload_images else '未开启（图片只给链接）' ]]
+        </p>
       [% endif %]
     </section>
 

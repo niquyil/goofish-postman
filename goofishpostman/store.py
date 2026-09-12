@@ -138,15 +138,25 @@ class WebSettings(BaseModel):
 
 
 class NotifySettings(BaseModel):
-    """飞书机器人配置（留空 uuid 表示不推送）。"""
+    """飞书机器人配置（留空 uuid 表示不推送）。
+
+    app_id / app_secret 是「企业自建应用」的凭据，只为上传图片拿 image_key 用
+    （飞书卡片不接受外部图片地址）；不填则图片消息退回给可点开的链接。
+    """
 
     uuid: str = ''
     secret: str = ''
+    app_id: str = ''
+    app_secret: str = ''
     enabled: bool = True
 
     @property
     def configured(self) -> bool:
         return bool(self.uuid.strip())
+
+    @property
+    def can_upload_images(self) -> bool:
+        return bool(self.app_id.strip() and self.app_secret.strip())
 
 
 class StoreData(BaseModel):

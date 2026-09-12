@@ -267,6 +267,26 @@ PLATFORM_CARD_CONTENT = {
     },
 }
 
+# 交易卡片里会被放行的文案之一（KEPT_TRADE_CARD_TITLES），其余文案会被静音
+KEPT_TRADE_CARD_CONTENT = {
+    'contentType': 26,
+    'dxCard': {
+        'item': {
+            'main': {
+                'exContent': {
+                    'desc': '请包装好商品，并按我在闲鱼上提供的地址发货',
+                    'title': '我已付款，等待你发货',
+                    'button': {
+                        'text': '查看详情',
+                        'targetUrl': 'fleamarket://order_detail?id=5118251546854009018&role=Buyer',
+                    },
+                },
+                'targetUrl': '',
+            }
+        }
+    },
+}
+
 
 def push_payload_with_content(content: dict, reminder_content: str = '', message_id: str = MESSAGE_ID) -> dict:
     """把一条正文 JSON 包成真实推送形态的 payload（比历史记录多一层 ['1']['1']）。

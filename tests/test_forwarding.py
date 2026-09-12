@@ -15,6 +15,7 @@ from fixtures import (
     AROUSE_PAYLOAD,
     IMAGE_CONTENT,
     IMAGE_URL,
+    KEPT_TRADE_CARD_CONTENT,
     PUSH_MESSAGE_PAYLOAD,
     SESSION_ID,
     TIP_CONTENT,
@@ -178,16 +179,29 @@ def test_image_message_is_forwarded_with_its_url(tmp_dir, stub_decrypt) -> None:
     assert supervisor.messages[-1].text == f'[图片]\n{IMAGE_URL}'
 
 
-def test_trade_card_message_is_forwarded_with_its_text(tmp_dir, stub_decrypt) -> None:
-    """交易卡片要给标题与说明，而不是只转发报文里那句 `[提醒开通微信收款]`。"""
+def test_kept_trade_card_is_forwarded_with_its_text(tmp_dir, stub_decrypt) -> None:
+    """放行的交易卡片（买家付款）要给标题与说明，而不是只转发报文里那句提醒。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
-        supervisor, push_frame(encrypted_record(push_payload_with_content(TRADE_CARD_CONTENT, '[提醒开通微信收款]')))
+        supervisor,
+        push_frame(encrypted_record(push_payload_with_content(KEPT_TRADE_CARD_CONTENT, '[交易消息]', 'keep-1'))),
     )
 
     text = notifier.card_payloads[0]['content']
-    assert text.startswith('[交易卡片]\n我已修改价格，等待你付款')
-    assert '去付款：fleamarket://order_detail?id=1&role=buyer' in text
+    assert text.startswith('[交易卡片]\n我已付款，等待你发货')
+    assert '查看详情：fleamarket://order_detail?id=5118251546854009018&role=Buyer' in text
+
+
+def test_other_trade_cards_are_recorded_but_not_pushed(tmp_dir, stub_decrypt) -> None:
+    """其余交易卡片（改价、评价提醒、地址修改……）只在网页留痕，不推飞书。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(
+        supervisor,
+        push_frame(encrypted_record(push_payload_with_content(TRADE_CARD_CONTENT, '[交易消息]', 'silent-1'))),
+    )
+
+    assert notifier.sent == []
+    assert supervisor.messages[-1].text.startswith('[交易卡片]\n我已修改价格，等待你付款')
 
 
 def test_extract_message_uid_extracted_from_real_payload() -> None:

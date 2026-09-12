@@ -29,11 +29,11 @@ class RecordingNotifier(FeishuNotifier):
 
     私信走的是 send_card（富文本卡片），这里把它也记进 sent（拼成「标题\\n正文」，
     和原来的纯文本格式一致），cards 记「标题 + 正文」，card_payloads 还留一份
-    明细与配色（Supervisor 会给卡片附上时间/商品名）。
+    明细、配色与图片地址（Supervisor 会给卡片附上时间/商品名与图片 url）。
     """
 
-    def __init__(self) -> None:
-        super().__init__(uuid='fake')
+    def __init__(self, app_id: str = '', app_secret: str = '') -> None:
+        super().__init__(uuid='fake', app_id=app_id, app_secret=app_secret)
         self.sent: list[str] = []
         self.cards: list[tuple[str, str]] = []
         self.card_payloads: list[dict] = []
@@ -41,9 +41,18 @@ class RecordingNotifier(FeishuNotifier):
     async def send(self, message: str) -> None:
         self.sent.append(message)
 
-    async def send_card(self, title: str, content: str, details: dict[str, str] | None = None, color: str = '') -> None:
+    async def send_card(
+        self,
+        title: str,
+        content: str,
+        details: dict[str, str] | None = None,
+        color: str = '',
+        images: tuple[str, ...] = (),
+    ) -> None:
         self.cards.append((title, content))
-        self.card_payloads.append({'title': title, 'content': content, 'details': details or {}, 'color': color})
+        self.card_payloads.append(
+            {'title': title, 'content': content, 'details': details or {}, 'color': color, 'images': list(images)}
+        )
         self.sent.append(f'{title}\n{content}')
 
     async def close(self) -> None:

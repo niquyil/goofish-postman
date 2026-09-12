@@ -144,6 +144,8 @@ class AccountPatch(BaseModel):
 class NotifyBody(BaseModel):
     uuid: str | None = None
     secret: str | None = None
+    app_id: str | None = None
+    app_secret: str | None = None
     enabled: bool | None = None
 
 
@@ -251,6 +253,9 @@ class WebApp:
                     'configured': self.store.data.notify.configured,
                     'enabled': self.store.data.notify.enabled,
                     'secret_set': bool(self.store.data.notify.secret),
+                    'app_id': self.store.data.notify.app_id,
+                    'app_secret_set': bool(self.store.data.notify.app_secret),
+                    'can_upload_images': self.store.data.notify.can_upload_images,
                 },
             },
         )
@@ -360,7 +365,15 @@ class WebApp:
     async def api_get_notify(self) -> Response:
         notify = self.store.data.notify
         return ChineseJSONResponse(
-            {'ok': True, 'uuid': notify.uuid, 'secret_set': bool(notify.secret), 'enabled': notify.enabled}
+            {
+                'ok': True,
+                'uuid': notify.uuid,
+                'secret_set': bool(notify.secret),
+                'app_id': notify.app_id,
+                'app_secret_set': bool(notify.app_secret),
+                'can_upload_images': notify.can_upload_images,
+                'enabled': notify.enabled,
+            }
         )
 
     async def api_update_notify(self, body: NotifyBody) -> Response:
@@ -368,9 +381,13 @@ class WebApp:
         notify = self.store.update_notify(**changes)
         # 重建推送器，让新配置立即生效
         await self.supervisor.notifier.close()
-        self.supervisor.notifier = FeishuNotifier(uuid=notify.uuid, secret=notify.secret)
+        self.supervisor.notifier = FeishuNotifier(
+            uuid=notify.uuid, secret=notify.secret, app_id=notify.app_id, app_secret=notify.app_secret
+        )
         self.supervisor.publish_event('info', '', '飞书推送配置已更新')
-        return ChineseJSONResponse({'ok': True, 'uuid': notify.uuid, 'enabled': notify.enabled})
+        return ChineseJSONResponse(
+            {'ok': True, 'uuid': notify.uuid, 'can_upload_images': notify.can_upload_images, 'enabled': notify.enabled}
+        )
 
     # ── 扫码登录 ──────────────────────────────────────────────────────────────
     async def api_start_qr_login(self) -> Response:

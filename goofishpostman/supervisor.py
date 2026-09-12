@@ -12,7 +12,13 @@ from loguru import logger
 
 from .accounts import FeishuNotifier, NotifyError
 from .goofish_live import GoofishLive, extract_message_text
-from .goofish_utils import extract_message_time, extract_message_uid, format_time, is_silent_message
+from .goofish_utils import (
+    extract_message_images,
+    extract_message_time,
+    extract_message_uid,
+    format_time,
+    is_silent_message,
+)
 from .sender import pick_header_color
 from .store import Account, Store
 
@@ -318,6 +324,7 @@ class Supervisor:
                     sender=record.sender,
                     details=self._build_message_details(message),
                     color=pick_header_color(current.id),
+                    images=extract_message_images(message['raw']),
                 )
             except NotifyError as e:
                 self.publish_event('error', current.id, str(e))

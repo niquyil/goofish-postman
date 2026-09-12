@@ -171,18 +171,35 @@ def test_restart_account(tmp_dir) -> None:
 # ── 飞书配置 ──────────────────────────────────────────────────────────────────
 def test_notify_roundtrip_never_returns_secret(tmp_dir) -> None:
     harness = build_harness(tmp_dir)
-    assert harness.client.get('/api/notify').json() == {'ok': True, 'uuid': '', 'secret_set': False, 'enabled': True}
+    assert harness.client.get('/api/notify').json() == {
+        'ok': True,
+        'uuid': '',
+        'secret_set': False,
+        'app_id': '',
+        'app_secret_set': False,
+        'can_upload_images': False,
+        'enabled': True,
+    }
 
-    response = harness.client.put('/api/notify', json={'uuid': 'uuid-1', 'secret': 'topsecret', 'enabled': True})
+    response = harness.client.put(
+        '/api/notify',
+        json={'uuid': 'uuid-1', 'secret': 'topsecret', 'app_id': 'cli_1', 'app_secret': 'appsecret', 'enabled': True},
+    )
     assert response.status_code == 200
 
     body = harness.client.get('/api/notify').json()
     assert body['uuid'] == 'uuid-1'
     assert body['secret_set'] is True
+    assert body['app_id'] == 'cli_1'
+    assert body['app_secret_set'] is True
+    assert body['can_upload_images'] is True  # 两个都填了才敢说能内嵌图片
     assert 'topsecret' not in str(body)
+    assert 'appsecret' not in str(body)
     assert harness.store.data.notify.secret == 'topsecret'
+    assert harness.store.data.notify.app_secret == 'appsecret'
     # 推送器已按新配置重建
     assert harness.supervisor.notifier.uuid == 'uuid-1'
+    assert harness.supervisor.notifier.can_upload_images is True
 
 
 # ── 鉴权 ──────────────────────────────────────────────────────────────────────

@@ -371,6 +371,49 @@ def test_platform_tip_is_marked_silent() -> None:
     assert is_silent_message({'1': {'2': 'x', '10': {}}}) is False  # 没有正文的帧不能炸
 
 
+def test_trade_cards_are_filtered_by_title() -> None:
+    """26 交易卡片只放行"买家拍下/买家付款/收到小红花"，其余文案静音。
+
+    实测某账号 33 条历史里 33 种文案（改价、评价提醒、地址修改、投缘优惠…），
+    对卖家有意义的就是这三种。
+    """
+    from goofishpostman.goofish_utils import extract_message_info as parse
+    from goofishpostman.goofish_utils import is_silent_message
+
+    def silent(title: str) -> bool:
+        content = {'contentType': 26, 'dxCard': {'item': {'main': {'exContent': {'title': title}}}}}
+        payload = parse(push_frame(encrypted_record(push_payload_with_content(content))))['raw']
+        return is_silent_message(payload)
+
+    assert silent('我已拍下，待付款') is False
+    assert silent('我已付款，等待你发货') is False
+    assert silent('收到小红花，心里乐开花！') is False
+    for title in (
+        '我已修改价格，等待你付款',
+        '我完成了评价',
+        '记得及时确认收货',
+        '我发起了地址修改申请',
+        '你还未开通微信收款',
+    ):
+        assert silent(title) is True, title
+
+
+def test_message_images_are_extracted_for_upload() -> None:
+    """图片消息要能取出图片地址（上传飞书换成 image_key 才能内嵌）。"""
+    from goofishpostman.goofish_utils import extract_message_images
+
+    image_payload = extract_message_info(push_frame(encrypted_record(push_payload_with_content(IMAGE_CONTENT))))['raw']
+    assert extract_message_images(image_payload) == [IMAGE_URL]
+
+    text_payload = extract_message_info(
+        push_frame(encrypted_record(push_payload_with_content({'contentType': 1, 'text': {'text': '在吗'}})))
+    )['raw']
+    assert extract_message_images(text_payload) == []
+    # 视频暂时只给链接：飞书的文件上传接口是另一套（im/v1/files）
+    video_payload = extract_message_info(push_frame(encrypted_record(push_payload_with_content(VIDEO_CONTENT))))['raw']
+    assert extract_message_images(video_payload) == []
+
+
 def test_image_content_is_read_from_history_shape_too() -> None:
     """同一份正文，推送与历史记录的包装层不同，两边都要能取到。"""
     from goofishpostman.goofish_utils import describe_message_content, extract_message_content, format_content_text

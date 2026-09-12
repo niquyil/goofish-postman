@@ -486,6 +486,15 @@ CONTENT_TYPE_LABELS = {
 # 只记录、不推送到飞书的内容类型（见 is_silent_message）
 SILENT_CONTENT_TYPES = frozenset({14})
 
+# 交易卡片（26）里放行的文案，其余一律静音。
+# 26 的文案极多（实测某账号 33 条历史里 33 种：改价、评价提醒、地址修改、投缘优惠……），
+# 真正对卖家有意义的只有"买家拍下/买家付款/收到小红花"这三种。
+# 「不是监听账号自己触发的」不用在这里判断：这类卡片的 senderUserId 就是操作方
+# （实测自己拍下的卡片 senderUserId = 本账号 unb），Supervisor.is_self_sent 会先过滤掉。
+KEPT_TRADE_CARD_TITLES = frozenset({'我已拍下，待付款', '我已付款，等待你发货', '收到小红花，心里乐开花！'})
+
+TRADE_CARD_CONTENT_TYPE = 26
+
 _HTML_TAG = compile_pattern(r'<[^>]+>')
 # 卡片文本里的链接：<a size=13 href="fleamarket://..." target="_blank">查看详情</a>
 # href 可能不带引号，也可能只有 data-intent（没有 href，这种就只留文字）
@@ -546,16 +555,36 @@ def describe_message_content(content: dict) -> MessageContent | None:
             return None
 
 
+def extract_message_images(payload: dict) -> list[str]:
+    """图片消息里的图片地址（上传到飞书换成 image_key 后能直接内嵌显示）。
+
+    目前只收 contentType=2 的图片；视频要另一套接口（im/v1/files），暂时只给链接。
+    """
+    content = extract_message_content(payload)
+    if not content or content.get('contentType') != 2:
+        return []
+    return [url for _, url in _image_links(content.get('image') or {})]
+
+
 def is_silent_message(payload: dict) -> bool:
     """这条消息是否属于「只记录、不推送」的类型。
 
-    14 是平台提示条（"想要卖家更快回复？平台帮你催促，点击“叮一下”"之类），
-    每个会话都会反复出现（真实历史 248 条里有 43 条），属于噪音，
-    不往飞书推；网页消息流仍然记录，随时能回查。
+    - 14 平台提示条（"想要卖家更快回复？平台帮你催促"之类），每个会话都反复出现
+      （真实历史 248 条里有 43 条），属于噪音；
+    - 26 交易卡片里只放行 KEPT_TRADE_CARD_TITLES 那几种文案。
+
+    两种都只在飞书侧静音，网页消息流仍然记录，随时能回查。
+    认不出的类型/没有正文的帧一律照常推送，不误伤。
     """
     content = extract_message_content(payload)
     kind = content.get('contentType') if content else None
-    return isinstance(kind, int) and kind in SILENT_CONTENT_TYPES
+    if not isinstance(kind, int):
+        return False
+    if kind in SILENT_CONTENT_TYPES:
+        return True
+    if kind == TRADE_CARD_CONTENT_TYPE:
+        return extract_trade_card_title(content) not in KEPT_TRADE_CARD_TITLES
+    return False
 
 
 def format_content_text(content: MessageContent) -> str:
@@ -599,6 +628,12 @@ def _video_links(video: dict) -> list[tuple[str, str]]:
     return [('', url)] if url else []
 
 
+def extract_trade_card_title(content: dict) -> str:
+    """交易卡片（26）/平台卡（25）的标题。"""
+    main = ((content.get('dxCard') or {}).get('item') or {}).get('main') or {}
+    return _strip_html(_as_text((main.get('exContent') or {}).get('title')))
+
+
 def _describe_trade_card(content: dict, kind: int) -> MessageContent:
     """交易卡片（26）与平台消息卡（25）：标题 + 副标题/描述 + 按钮链接。
 
@@ -608,7 +643,7 @@ def _describe_trade_card(content: dict, kind: int) -> MessageContent:
     main = ((content.get('dxCard') or {}).get('item') or {}).get('main') or {}
     ex_content = main.get('exContent') or {}
     lines = [
-        _strip_html(_as_text(ex_content.get('title'))),
+        extract_trade_card_title(content),
         _strip_html(_as_text(ex_content.get('subTitle') or ex_content.get('desc'))),
     ]
     links: list[tuple[str, str]] = []

@@ -267,6 +267,7 @@ function pushEvent(event) {
 function renderNotify() {
   if (!notifySettings) return;
   document.getElementById('notify-uuid').value = notifySettings.uuid || '';
+  document.getElementById('notify-app-id').value = notifySettings.app_id || '';
   document.getElementById('notify-enabled').checked = Boolean(notifySettings.enabled);
   const state = document.getElementById('notify-state');
   if (notifySettings.configured && notifySettings.enabled) {
@@ -288,6 +289,9 @@ async function loadNotify() {
     configured: Boolean(body.uuid),
     enabled: body.enabled,
     secret_set: body.secret_set,
+    app_id: body.app_id,
+    app_secret_set: body.app_secret_set,
+    can_upload_images: body.can_upload_images,
   };
   renderNotify();
 }
@@ -564,13 +568,18 @@ function bind() {
     event.preventDefault();
     const payload = {
       uuid: document.getElementById('notify-uuid').value.trim(),
+      app_id: document.getElementById('notify-app-id').value.trim(),
       enabled: document.getElementById('notify-enabled').checked,
     };
+    // 密钥类字段留空表示"不改动"，避免每次保存都把已存的密钥清掉
     const secret = document.getElementById('notify-secret').value.trim();
     if (secret) payload.secret = secret;
+    const appSecret = document.getElementById('notify-app-secret').value.trim();
+    if (appSecret) payload.app_secret = appSecret;
     try {
       await api('/api/notify', { method: 'PUT', body: JSON.stringify(payload) });
       document.getElementById('notify-secret').value = '';
+      document.getElementById('notify-app-secret').value = '';
       await loadNotify();
       toast('飞书配置已保存');
     } catch (error) {

@@ -7,6 +7,7 @@ from json import dumps
 from os import name
 from stat import S_IMODE
 
+from httpx import HTTPError
 from pytest import mark, raises
 
 from goofishpostman.accounts import FeishuNotifier, format_message, is_response_ok
@@ -294,3 +295,132 @@ def test_notifier_send_keeps_plain_text(monkeypatch) -> None:
     payload = client.calls[0]['json']
     assert payload['msg_type'] == 'text'
     assert payload['content']['text'] == '出问题了'
+
+
+# ── 图片内嵌（自建应用上传换 image_key）────────────────────────────────────────
+IMAGE_URL = 'https://img.alicdn.com/imgextra/i4/O1CN01RSAPMB1dNBgdIEGcB_!!53-xy_chat.heic'
+
+
+class FakeDownload:
+    """仿 httpx.Response 的下载结果。"""
+
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class FakeImageClient:
+    """按 URL 区分「换 token / 传图片 / 发 webhook」三类请求。"""
+
+    def __init__(self, upload_code: int = 0) -> None:
+        self.upload_code = upload_code
+        self.is_closed = False
+        self.calls: list[dict] = []
+        self.image = b'\xff\xd8\xff\xe0fake-jpeg'
+
+    async def get(self, url: str) -> FakeDownload:
+        self.calls.append({'method': 'GET', 'url': url})
+        return FakeDownload(self.image)
+
+    async def post(self, url: str, **kwargs) -> FakeResponse:
+        self.calls.append({'method': 'POST', 'url': url, **kwargs})
+        if url.endswith('/tenant_access_token/internal'):
+            return FakeResponse({'code': 0, 'tenant_access_token': 'tok-1', 'expire': 7200})
+        if url.endswith('/im/v1/images'):
+            if self.upload_code:
+                return FakeResponse({'code': self.upload_code, 'msg': 'upload denied'})
+            return FakeResponse({'code': 0, 'data': {'image_key': 'img-key-1'}})
+        return FakeResponse({'code': 0, 'msg': 'success'})
+
+    async def aclose(self) -> None:
+        self.is_closed = True
+
+    def count(self, suffix: str) -> int:
+        return sum(1 for call in self.calls if call['url'].endswith(suffix))
+
+
+def make_image_notifier(monkeypatch, client: FakeImageClient, *, app: bool = True) -> FeishuNotifier:
+    notifier = FeishuNotifier(uuid='abc', app_id='cli_1' if app else '', app_secret='appsecret' if app else '')
+    monkeypatch.setattr(notifier, '_client', client)
+    return notifier
+
+
+def test_image_is_inlined_with_the_uploaded_key(monkeypatch) -> None:
+    """配了自建应用：图片地址先上传换 image_key，卡片正文里直接显示图片。"""
+    client = FakeImageClient()
+    notifier = make_image_notifier(monkeypatch, client)
+    run(
+        notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
+    )
+
+    assert client.count('/tenant_access_token/internal') == 1
+    assert client.count('/im/v1/images') == 1
+    upload = next(call for call in client.calls if call['url'].endswith('/im/v1/images'))
+    assert upload['headers']['Authorization'] == 'Bearer tok-1'
+    assert upload['data'] == {'image_type': 'message'}
+
+    body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
+    # 标注留着当小标题，地址行换成内嵌图片（多图时就是「[图片]」下面排几张图）
+    assert body['elements'][0] == {'tag': 'markdown', 'content': '[图片]\n![图片](img-key-1)'}
+    assert IMAGE_URL not in str(body)  # 地址行已被内嵌图片取代
+
+
+def test_image_keeps_link_without_app_credentials(monkeypatch) -> None:
+    """没配自建应用：不上传，正文里保留可点开的地址（当前默认行为）。"""
+    client = FakeImageClient()
+    notifier = make_image_notifier(monkeypatch, client, app=False)
+    run(
+        notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
+    )
+
+    assert client.count('/im/v1/images') == 0
+    body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
+    assert body['elements'][0]['content'] == f'[图片]\n[{IMAGE_URL}]({IMAGE_URL})'
+
+
+def test_upload_failure_falls_back_to_the_link(monkeypatch) -> None:
+    """上传失败不能把整条推送带崩，退回链接即可。"""
+    client = FakeImageClient(upload_code=234001)
+    notifier = make_image_notifier(monkeypatch, client)
+    run(
+        notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
+    )
+
+    body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
+    assert body['elements'][0]['content'] == f'[图片]\n[{IMAGE_URL}]({IMAGE_URL})'
+
+
+def test_same_image_is_uploaded_once(monkeypatch) -> None:
+    """同一张图（含重复下发的同一条消息）只上传一次。"""
+    client = FakeImageClient()
+    notifier = make_image_notifier(monkeypatch, client)
+    for _ in range(3):
+        run(
+            notifier.send_account_message(
+                '主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,)
+            )
+        )
+
+    assert client.count('/im/v1/images') == 1
+    assert client.count('O1CN01RSAPMB1dNBgdIEGcB_!!53-xy_chat.heic') == 1  # 也只下载一次
+
+
+def test_download_failure_falls_back_to_the_link(monkeypatch) -> None:
+    """图片下载不到（地址过期等）同样退回链接。"""
+
+    class FailingClient(FakeImageClient):
+        async def get(self, url: str) -> FakeDownload:
+            self.calls.append({'method': 'GET', 'url': url})
+            raise HTTPError('boom')
+
+    client = FailingClient()
+    notifier = make_image_notifier(monkeypatch, client)
+    run(
+        notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
+    )
+
+    assert client.count('/im/v1/images') == 0
+    body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
+    assert f'[{IMAGE_URL}]({IMAGE_URL})' in body['elements'][0]['content']

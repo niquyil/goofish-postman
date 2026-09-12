@@ -9,13 +9,16 @@ dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",  # 飞书推送的 HTTP 客户端（accounts.py / sender.py），属于运行依赖
     "jinja2>=3.1.6",
+    "lark-oapi>=1.7.3",  # 飞书官方 SDK：发消息、传图片、列群
     "loguru>=0.7.3",
     "msgpack>=1.2.2",  # 闲鱼消息体是 MessagePack（原 goofish.js 里那 500 行就是它的混淆实现）
     "pydantic>=2.13.5",
     "qrcode[pil]>=8.2",  # [pil] 会带上 pillow：qrcode 渲染 PNG 时 import PIL，缺了直接 ModuleNotFoundError
     "requests>=2.34.2",
     "uvicorn>=0.52.4",
-    "websockets>=17.1",
+    # lark-oapi 1.7.3 要求 websockets<16，而闲鱼长连接用的 additional_headers 需要 >=14，
+    # 于是两边取交集钉在 15.x（实测闲鱼长连接在 15.0.1 上收发正常，见 README 的说明）
+    "websockets>=15.0.1,<16",
 ]
 
 [dependency-groups]

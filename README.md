@@ -80,7 +80,14 @@
 | 前端    | 原生 HTML / CSS / JS，无构建步骤；SSE 到达后由 JS 增量更新            |
 | 长连接   | websockets（闲鱼私信 WebSocket）                            |
 | HTTP  | requests（闲鱼接口，在 Web 里用线程池调用，不阻塞事件循环）                   |
+| 飞书    | lark-oapi（官方 SDK：发消息 / 传图片 / 列群，token 自动续期）             |
 | 校验/配置 | pydantic（请求体与配置模型）                                    |
+
+> **依赖版本冲突**：`lark-oapi` 1.7.3 要求 `websockets<16`，而闲鱼长连接用到的
+> `additional_headers` 需要 `websockets>=14`，两边取交集钉在 **15.x**（实测 15.0.1 上
+> 闲鱼长连接握手、收帧、拉历史都正常）。`lark-oapi` 的顶层导入会连带把全部 API 的事件
+> 处理器都导一遍（实测约 10 秒），所以它是**惰性导入**的：Web 启动时在后台线程里预热，
+> 不影响启动速度，也不会让第一条消息多等。
 
 ### 安装依赖
 
@@ -191,19 +198,19 @@ uv run python -m goofishpostman
 保存后 `accounts.json` 的 `notify` 里会有 `app_id` / `app_secret` / `chat_id`（形如 `oc_xxx`），
 状态显示为「机器人应用」。三项缺任意一项都不发送（网页会提示「未配置」）。
 
-发送细节：
-- 接口 `POST /open-apis/im/v1/messages?receive_id_type=chat_id`，`content` 是 **JSON 字符串**
-  （自定义机器人 webhook 那套形状与签名已经不在了）；
-- 收到图片消息会先把图片下载下来、调 `POST /open-apis/im/v1/images`（`image_type=message`）
-  换成 `image_key`，再放进卡片正文内嵌显示；**同一张图只上传一次**（按地址缓存）；
+发送细节（全部经官方 SDK `lark-oapi`，见 `accounts.FeishuNotifier`）：
+- 发消息用 `im.v1.message.create`（`receive_id_type=chat_id`），`content` 是 **JSON 字符串**；
+  上传图片用 `im.v1.image.create`（`image_type=message`），列群用 `im.v1.chat.list`；
+  token 由 SDK 自己缓存续期；
+- SDK 是同步的，调用统一丢线程池（`anyio.to_thread`），不阻塞事件循环；
+- 收到图片消息会先把图片下载下来（这一步仍用 httpx）、换成 `image_key`，再放进卡片正文内嵌显示；
+  **同一张图只上传一次**（按地址缓存）；
 - 内嵌成功时正文里那句 `[图片]` 标注与地址行都会被去掉，只留图片本身；
   上传/下载失败时自动退回可点开的链接，不会漏消息。
 
-三个踩过的坑，供参考：
-- 上传必须用**不带** `Content-Type: application/json` 默认头的 HTTP 客户端，否则飞书会把
-  multipart 请求体当 JSON 解析，直接报 `234001 Invalid request param`；
+两个踩过的坑，供参考：
 - 下载闲鱼图片要带 `Referer: https://www.goofish.com/`，不带的话部分地址会返回 420
-  （实测同一张图裸请求 420、加 Referer 后 200）；
+  （实测同一张图裸请求 420、加 Referer 后 200）；SDK 不管这一步，所以下载仍走 httpx；
 - 列群接口要 `im:chat:readonly` 权限，且机器人必须已经在群里，否则拿不到群列表。
 
 > 账号之间互发消息时，双方的连接都会收到同一条推送：
@@ -242,7 +249,7 @@ goofishpostman/
 ├── web.py             # FastAPI 管理接口 + SSE 实时推送 + 扫码登录会话管理
 ├── supervisor.py      # 多账号调度：并发监听、启停、断线重连、事件流
 ├── store.py           # 账号与配置持久化（原子写入，0600）
-├── accounts.py        # 多账号消息汇总推送飞书
+├── accounts.py        # 多账号消息汇总推送飞书（lark-oapi：发消息 / 传图片 / 列群）
 ├── qrlogin.py         # 扫码登录：取二维码 / 轮询状态 / 完成登录 / 渲染 PNG
 ├── webui/             # 前端与模板
 │   ├── templates/     # Jinja2 模板（首屏服务端渲染：账号、消息、事件、配置回填）

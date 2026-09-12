@@ -1,28 +1,32 @@
-"""把各账号收到的私信汇总推送到同一个飞书机器人（企业自建应用）。"""
+"""把各账号收到的私信汇总推送到同一个飞书机器人（企业自建应用）。
+
+飞书侧全部走官方 SDK `lark-oapi`：发消息（im/v1/messages）、上传图片（im/v1/images）、
+列群（im/v1/chats），token 由 SDK 自己缓存续期。SDK 是同步的，调用统一丢进线程池，
+不阻塞事件循环；SDK 本身惰性导入（见 load_sdk）。只有下载闲鱼图片那一步仍用 httpx
+（要自带 Referer，SDK 不管这个）。
+"""
 
 from __future__ import annotations
 
-from time import time
+from functools import lru_cache
+from io import BytesIO
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+from anyio import to_thread
 from httpx import AsyncClient, HTTPError, TimeoutException
 from loguru import logger
 
 from .goofish_utils import CONTENT_TYPE_LABELS
-from .sender import DEFAULT_HEADER_COLOR, FEISHU_HEADERS, build_app_message, build_card, build_text_message
+from .sender import DEFAULT_HEADER_COLOR, build_card, build_text_message, content_json
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from lark_oapi import Client
+
     from .types import MessageInfo
 
-# 飞书开放平台（自建应用）接口：换 token、发消息、列群、上传图片
-TENANT_TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal'
-MESSAGE_URL = 'https://open.feishu.cn/open-apis/im/v1/messages'
-CHAT_LIST_URL = 'https://open.feishu.cn/open-apis/im/v1/chats'
-UPLOAD_IMAGE_URL = 'https://open.feishu.cn/open-apis/im/v1/images'
-# token 有效期 2 小时，这里提前 5 分钟续期
-_TOKEN_SAFETY_MARGIN = 300
 # 同一张图只上传一次；保留条数上限，避免长期运行无限增长
 _MAX_IMAGE_CACHE = 200
 # 单张图片下载上限（闲鱼原图一般几百 KB，给足余量）
@@ -37,6 +41,36 @@ IMAGE_DOWNLOAD_HEADERS = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
     ),
 }
+# 上传给飞书的图片文件名（MultipartEncoder 用它当 filename，随便取但要像图片）
+_IMAGE_FILENAME = 'message.jpg'
+
+
+@lru_cache(maxsize=1)
+def load_sdk() -> SimpleNamespace:
+    """惰性加载飞书官方 SDK，返回用到的那些类。
+
+    `import lark_oapi` 会连带把全部 API 的事件处理器都导一遍（它自己 `__init__` 里
+    有 `from . import ws`），实测要 9~10 秒。于是放到真正要用时再导，Web 启动时
+    在后台线程里预热一次（见 `__main__.run_web`），别让它落在启动路径或第一条消息上。
+    """
+    from lark_oapi import Client, LogLevel
+    from lark_oapi.api.im.v1 import (
+        CreateImageRequest,
+        CreateImageRequestBody,
+        CreateMessageRequest,
+        CreateMessageRequestBody,
+        ListChatRequest,
+    )
+
+    return SimpleNamespace(
+        Client=Client,
+        LogLevel=LogLevel,
+        CreateImageRequest=CreateImageRequest,
+        CreateImageRequestBody=CreateImageRequestBody,
+        CreateMessageRequest=CreateMessageRequest,
+        CreateMessageRequestBody=CreateMessageRequestBody,
+        ListChatRequest=ListChatRequest,
+    )
 
 
 class NotifyError(RuntimeError):
@@ -58,6 +92,11 @@ def build_image_markdown(image_key: str, alt: str = '图片') -> str:
     return f'![{alt}]({image_key})'
 
 
+def describe_response(response) -> str:
+    """把 SDK 的失败响应整理成一行日志/异常文案。"""
+    return f'code={response.code} msg={response.msg} log_id={response.get_log_id()}'
+
+
 def drop_lines(text: str, values: set[str]) -> str:
     """去掉正文里已经被内嵌图片取代的那些地址行。"""
     return '\n'.join(line for line in text.splitlines() if line.strip() not in values)
@@ -74,10 +113,8 @@ class FeishuNotifier:
         self.app_secret = app_secret.strip()
         self.chat_id = chat_id.strip()
         self.timeout = timeout
-        self._client: AsyncClient | None = None
+        self._client: Client | None = None
         self._media_client: AsyncClient | None = None
-        self._token: str = ''
-        self._token_expires_at: float = 0.0
         self._image_keys: dict[str, str] = {}
 
     @property
@@ -89,35 +126,37 @@ class FeishuNotifier:
         """能发消息的前提：应用凭据 + 目标群。"""
         return bool(self.can_upload_images and self.chat_id)
 
-    def _get_client(self) -> AsyncClient:
-        # httpx 的 AsyncClient 可以跨事件循环复用，这里按需创建并缓存
-        if self._client is None or self._client.is_closed:
-            self._client = AsyncClient(headers=FEISHU_HEADERS, timeout=self.timeout)
+    def _get_client(self) -> Client:
+        """官方 SDK 的客户端（同步），token 由它自己缓存续期。
+
+        只在需要时创建：没配凭据时不构造，免得白拿一次 token。
+        """
+        if self._client is None:
+            module = load_sdk()
+            self._client = (
+                module.Client.builder()
+                .app_id(self.app_id)
+                .app_secret(self.app_secret)
+                .log_level(module.LogLevel.ERROR)  # SDK 自己会打日志，别灌进我们的日志里
+                .build()
+            )
         return self._client
 
     def _get_media_client(self) -> AsyncClient:
-        """下载图片 / 上传图片专用的客户端。
-
-        不能复用带 `Content-Type: application/json` 默认头的那一个：httpx 会把这个头
-        一起发出去，飞书上传接口据此当成 JSON 解析，直接报 234001 Invalid request param
-        （实测：带 JSON 默认头 234001，换成干净客户端就能过参数校验）。
-        """
+        """下载闲鱼图片专用的客户端（要带 Referer，SDK 不管这一步）。"""
         if self._media_client is None or self._media_client.is_closed:
             self._media_client = AsyncClient(headers=IMAGE_DOWNLOAD_HEADERS, timeout=self.timeout)
         return self._media_client
 
     async def close(self) -> None:
-        for client in (self._client, self._media_client):
-            if client is not None and not client.is_closed:
-                await client.aclose()
-        self._client = None
+        if self._media_client is not None and not self._media_client.is_closed:
+            await self._media_client.aclose()
         self._media_client = None
-        self._token = ''
-        self._token_expires_at = 0.0
+        self._client = None
 
     async def send(self, message: str) -> None:
         """纯文本推送（告警等不需要卡片格式的场景）。"""
-        await self._send(build_app_message(self.chat_id, 'text', build_text_message(message)))
+        await self._send_message('text', content_json(build_text_message(message)))
 
     async def send_card(
         self,
@@ -133,27 +172,33 @@ class FeishuNotifier:
         标注一起去掉），传不上去的原样保留成可点链接。
         """
         body = await self._inline_images(content, images)
-        await self._send(build_app_message(self.chat_id, 'interactive', build_card(title, body, details, color)))
+        await self._send_message('interactive', content_json(build_card(title, body, details, color)))
 
-    async def _send(self, payload: dict) -> None:
-        """用自建应用发消息（需要 tenant_access_token）。"""
+    async def _send_message(self, msg_type: str, content: str) -> None:
+        """发一条消息（SDK 是同步的，整个「建请求 + 发」都丢线程池里跑）。"""
         if not self.can_send_via_app:
             logger.debug('未配置飞书应用凭据或目标群，跳过推送')
             return
-        token = await self.get_tenant_token()
-        try:
-            response = await self._get_client().post(
-                MESSAGE_URL,
-                params={'receive_id_type': 'chat_id'},
-                headers={'Authorization': f'Bearer {token}'},
-                json=payload,
+        await to_thread.run_sync(self._create_message, msg_type, content)
+
+    def _create_message(self, msg_type: str, content: str) -> None:
+        module = load_sdk()
+        request = (
+            module.CreateMessageRequest.builder()
+            .receive_id_type('chat_id')
+            .request_body(
+                module.CreateMessageRequestBody.builder()
+                .receive_id(self.chat_id)
+                .msg_type(msg_type)
+                .content(content)
+                .build()
             )
-            body = response.json()
-        except (HTTPError, TimeoutException, ValueError) as e:
-            raise NotifyError(f'飞书推送失败: {e}') from e
-        if body.get('code') != 0:
-            raise NotifyError(f'飞书返回错误: {body}')
-        logger.debug(f'飞书推送成功（自建应用）: {body.get("msg")}')
+            .build()
+        )
+        response = self._get_client().im.v1.message.create(request)
+        if not response.success():
+            raise NotifyError(f'飞书推送失败: {describe_response(response)}')
+        logger.debug('飞书推送成功')
 
     async def _inline_images(self, content: str, images: Sequence[str]) -> str:
         """把图片地址换成内嵌图片，返回新的正文。"""
@@ -199,66 +244,46 @@ class FeishuNotifier:
         self._image_keys[url] = image_key
         return image_key
 
-    async def get_tenant_token(self) -> str:
-        """自建应用 token（上传图片用），带缓存与提前续期。"""
-        if self._token and time() < self._token_expires_at:
-            return self._token
-        try:
-            response = await self._get_client().post(
-                TENANT_TOKEN_URL, json={'app_id': self.app_id, 'app_secret': self.app_secret}
-            )
-            body = response.json()
-        except (HTTPError, TimeoutException, ValueError) as e:
-            raise NotifyError(f'获取飞书应用 token 失败: {e}') from e
-        if body.get('code') != 0 or not body.get('tenant_access_token'):
-            raise NotifyError(f'获取飞书应用 token 失败: {body}')
-        self._token = body['tenant_access_token']
-        self._token_expires_at = time() + max(0, int(body.get('expire', 7200)) - _TOKEN_SAFETY_MARGIN)
-        return self._token
-
     async def list_chats(self) -> list[dict[str, str]]:
         """机器人应用所在的群列表（界面上让用户挑一个当推送目标）。
 
         需要 `im:chat:readonly`（或 `im:chat`）权限，且机器人必须已经进群。
         """
-        token = await self.get_tenant_token()
-        try:
-            response = await self._get_client().get(
-                CHAT_LIST_URL, params={'page_size': 50}, headers={'Authorization': f'Bearer {token}'}
-            )
-            body = response.json()
-        except (HTTPError, TimeoutException, ValueError) as e:
-            raise NotifyError(f'获取群列表失败: {e}') from e
-        if body.get('code') != 0:
-            raise NotifyError(f'获取群列表失败: {body}')
-        items = (body.get('data') or {}).get('items') or []
+        return await to_thread.run_sync(self._list_chats)
+
+    def _list_chats(self) -> list[dict[str, str]]:
+        module = load_sdk()
+        request = module.ListChatRequest.builder().page_size(50).build()
+        response = self._get_client().im.v1.chat.list(request)
+        if not response.success():
+            raise NotifyError(f'获取群列表失败: {describe_response(response)}')
+        items = (response.data.items if response.data else None) or []
         return [
-            {'chat_id': item.get('chat_id', ''), 'name': item.get('name') or item.get('chat_id', '')}
-            for item in items
-            if isinstance(item, dict) and item.get('chat_id')
+            {'chat_id': chat.chat_id or '', 'name': chat.name or chat.chat_id or ''} for chat in items if chat.chat_id
         ]
 
     async def upload_image(self, data: bytes) -> str:
-        """上传图片，返回 image_key（卡片内嵌图片必须用它）。
+        """上传图片，返回 image_key（卡片内嵌图片必须用它）。"""
+        return await to_thread.run_sync(self._upload_image, data)
 
-        必须用不带 JSON 默认头的 media 客户端：否则 httpx 会把
-        `Content-Type: application/json` 一起发出去，飞书按 JSON 解析 multipart 请求体，
-        直接报 234001 Invalid request param（实测）。
+    def _upload_image(self, data: bytes) -> str:
+        """上传图片（同步实现，在线程里跑）。
+
+        SDK 会把 IO 对象原样交给 requests_toolbelt 做 multipart，所以这里包一个带
+        `name` 的 BytesIO（文件名会出现在表单里）。
         """
-        token = await self.get_tenant_token()
-        try:
-            response = await self._get_media_client().post(
-                UPLOAD_IMAGE_URL,
-                headers={'Authorization': f'Bearer {token}'},
-                data={'image_type': 'message'},
-                files={'image': ('message.jpg', data, 'image/jpeg')},
-            )
-            body = response.json()
-        except (HTTPError, TimeoutException, ValueError) as e:
-            raise NotifyError(f'上传图片失败: {e}') from e
-        image_key = (body.get('data') or {}).get('image_key')
-        if body.get('code') != 0 or not image_key:
-            raise NotifyError(f'上传图片失败: {body}')
+        module = load_sdk()
+        stream = BytesIO(data)
+        stream.name = _IMAGE_FILENAME
+        request = (
+            module.CreateImageRequest.builder()
+            .request_body(module.CreateImageRequestBody.builder().image_type('message').image(stream).build())
+            .build()
+        )
+        response = self._get_client().im.v1.image.create(request)
+        image_key = response.data.image_key if response.data else None
+        if not response.success() or not image_key:
+            raise NotifyError(f'上传图片失败: {describe_response(response)}')
         return image_key
 
     async def send_account_message(

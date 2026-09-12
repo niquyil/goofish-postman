@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser
-from asyncio import run
+from asyncio import create_task, run
 from pathlib import Path
 from sys import argv as sys_argv  # 本文件的 main() 有同名参数 argv，导入时改名
 
+from anyio import to_thread
 from loguru import logger
 
-from .accounts import FeishuNotifier
+from .accounts import FeishuNotifier, load_sdk
 from .store import Store
 from .supervisor import Supervisor
+
+
+async def warm_up_feishu_sdk() -> None:
+    """后台预热飞书 SDK。
+
+    `import lark_oapi` 实测要 9~10 秒（它把全部 API 的事件处理器都导了一遍），
+    所以在后台线程里先导好，避免落在启动路径上、也避免第一次转发时才发现要等。
+    """
+    await to_thread.run_sync(load_sdk)
+    logger.debug('飞书 SDK 预热完成')
 
 
 async def run_web(store: Store, host: str = '', port: int = 0) -> None:
@@ -20,6 +31,8 @@ async def run_web(store: Store, host: str = '', port: int = 0) -> None:
     supervisor = Supervisor(
         store, FeishuNotifier(app_id=notify.app_id, app_secret=notify.app_secret, chat_id=notify.chat_id)
     )
+    if notify.has_app_credentials:
+        create_task(warm_up_feishu_sdk())
     await supervisor.start_enabled()
     await serve(store, supervisor, host=host, port=port)
 

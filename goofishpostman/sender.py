@@ -1,8 +1,7 @@
 """飞书卡片的组装。
 
-发送走的是「企业自建应用」接口（见 accounts.FeishuNotifier）：
-`content` 必须是 JSON 字符串、带 Authorization，不用签名 ——
-所以这里只负责把卡片对象拼出来，不涉及传送方式。
+发送走官方 SDK（见 accounts.FeishuNotifier）：`content` 必须是 JSON 字符串，
+鉴权与请求都由 SDK 负责，所以这里只负责把卡片对象拼出来。
 """
 
 from __future__ import annotations
@@ -11,12 +10,10 @@ from json import dumps
 from re import compile as compile_pattern
 from zlib import crc32
 
-FEISHU_HEADERS = {'Content-Type': 'application/json'}
 
-
-def build_app_message(receive_id: str, msg_type: str, content: dict) -> dict:
-    """自建应用发消息的请求体（`content` 是 JSON 字符串）。"""
-    return {'receive_id': receive_id, 'msg_type': msg_type, 'content': dumps(content, ensure_ascii=False)}
+def content_json(content: dict) -> str:
+    """消息接口的 `content` 字段：JSON 字符串（卡片对象、文本对象都走它）。"""
+    return dumps(content, ensure_ascii=False)
 
 
 # 卡片标题可用的配色（不同账号固定用不同颜色，扫一眼就知道是哪个号收到的）

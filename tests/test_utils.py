@@ -356,7 +356,7 @@ def test_unknown_content_falls_back_to_reminder_text() -> None:
 
 
 def test_platform_tip_is_marked_silent() -> None:
-    """平台提示条（14）只记录不推送，其余类型照常推。"""
+    """平台提示条（14）与平台消息卡（25）只记录不推送，其余类型照常推。"""
     from goofishpostman.goofish_utils import extract_message_info as parse
     from goofishpostman.goofish_utils import is_silent_message
 
@@ -364,9 +364,9 @@ def test_platform_tip_is_marked_silent() -> None:
         return parse(push_frame(encrypted_record(push_payload_with_content(content))))['raw']
 
     assert is_silent_message(payload_of(TIP_CONTENT)) is True
+    assert is_silent_message(payload_of(PLATFORM_CARD_CONTENT)) is True
     assert is_silent_message(payload_of({'contentType': 1, 'text': {'text': '在吗'}})) is False
     assert is_silent_message(payload_of(IMAGE_CONTENT)) is False
-    assert is_silent_message(payload_of(PLATFORM_CARD_CONTENT)) is False
     assert is_silent_message(payload_of({'contentType': 99})) is False  # 认不出的照样推
     assert is_silent_message({'1': {'2': 'x', '10': {}}}) is False  # 没有正文的帧不能炸
 

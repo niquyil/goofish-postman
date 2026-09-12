@@ -32,19 +32,6 @@ def build_text_payload(message: str, secret: str | None = None) -> dict:
     return _with_sign(payload, secret)
 
 
-def wrap_code_block(content: str) -> str:
-    """把内容包进 markdown 代码块（飞书会渲染成代码框）。
-
-    内容里本来就带反引号时把围栏加长，避免提前闭合。
-    """
-    longest = run = 0
-    for char in content:
-        run = run + 1 if char == '`' else 0
-        longest = max(longest, run)
-    fence = '`' * max(3, longest + 1)
-    return f'{fence}\n{content}\n{fence}'
-
-
 # 卡片标题可用的配色（不同账号固定用不同颜色，扫一眼就知道是哪个号收到的）
 HEADER_COLORS = ('blue', 'wathet', 'turquoise', 'green', 'yellow', 'orange', 'red', 'carmine', 'violet', 'indigo')
 DEFAULT_HEADER_COLOR = 'blue'
@@ -58,8 +45,8 @@ def pick_header_color(seed: str) -> str:
 
 
 def format_details(details: dict[str, str]) -> str:
-    """把明细拼成代码框里的多行文本（一行一个字段，取不到的字段不占行）。"""
-    return '\n'.join(f'{key}：{value}' for key, value in details.items() if value)
+    """把明细拼成一行小字（取不到的字段不占位）。"""
+    return ' ｜ '.join(f'**{key}** {value}' for key, value in details.items() if value)
 
 
 # 正文里要变成可点链接的地址（http/https）。`fleamarket://` 这类 App 深链不转：
@@ -95,18 +82,19 @@ def build_card_payload(
     secret: str | None = None,
     color: str = DEFAULT_HEADER_COLOR,
 ) -> dict:
-    """富文本卡片：标题标明消息流向，明细放代码框，正文用普通文本。
+    """富文本卡片：标题标明消息流向，明细用一行小号灰字，正文用普通文本。
 
-    标题已经承担了"这是谁发给谁"的信息，正文不必再抢视觉（不进代码框），
-    反而明细（时间/商品名）是辅助信息，放进代码框与正文自然分开。
-    明细排在正文前面 —— 先看清是哪条消息，再读内容。
+    标题已经承担了"这是谁发给谁"的信息，正文不必再抢视觉；明细（时间/商品名）是辅助信息，
+    用 markdown 的 notation 字号（小号灰字）渲染，再加一条分割线跟正文分开 ——
+    比代码框干净：飞书会在代码框上多加一行「N 行代码」，那行没有意义。
 
-    用卡片 2.0 的 markdown 组件 —— 1.0 的 lark_md 不支持代码块。
+    用卡片 2.0 的 markdown 组件（1.0 的 lark_md 连字号、分割线都控制不了）。
     """
     elements: list[dict] = []
     line = format_details(details or {})
     if line:
-        elements.append({'tag': 'markdown', 'content': wrap_code_block(line)})
+        elements.append({'tag': 'markdown', 'content': line, 'text_size': 'notation'})
+        elements.append({'tag': 'hr'})
     elements.append({'tag': 'markdown', 'content': linkify_urls(content)})
     payload: dict = {
         'msg_type': 'interactive',

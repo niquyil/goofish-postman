@@ -24,6 +24,13 @@ _TOKEN_SAFETY_MARGIN = 300
 _MAX_IMAGE_CACHE = 200
 # 单张图片下载上限（闲鱼原图一般几百 KB，给足余量）
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# 下载闲鱼图片要带 Referer/UA：不带的话部分地址直接返回 420（实测换头后 200）
+IMAGE_DOWNLOAD_HEADERS = {
+    'Referer': 'https://www.goofish.com/',
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+    ),
+}
 
 
 class NotifyError(RuntimeError):
@@ -85,6 +92,7 @@ class FeishuNotifier:
         self.app_secret = app_secret.strip()
         self.timeout = timeout
         self._client: AsyncClient | None = None
+        self._media_client: AsyncClient | None = None
         self._token: str = ''
         self._token_expires_at: float = 0.0
         self._image_keys: dict[str, str] = {}
@@ -107,10 +115,23 @@ class FeishuNotifier:
             self._client = AsyncClient(headers=FEISHU_HEADERS, timeout=self.timeout)
         return self._client
 
+    def _get_media_client(self) -> AsyncClient:
+        """下载图片 / 上传图片专用的客户端。
+
+        不能复用带 `Content-Type: application/json` 默认头的那一个：httpx 会把这个头
+        一起发出去，飞书上传接口据此当成 JSON 解析，直接报 234001 Invalid request param
+        （实测：带 JSON 默认头 234001，换成干净客户端就能过参数校验）。
+        """
+        if self._media_client is None or self._media_client.is_closed:
+            self._media_client = AsyncClient(headers=IMAGE_DOWNLOAD_HEADERS, timeout=self.timeout)
+        return self._media_client
+
     async def close(self) -> None:
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
+        for client in (self._client, self._media_client):
+            if client is not None and not client.is_closed:
+                await client.aclose()
         self._client = None
+        self._media_client = None
         self._token = ''
         self._token_expires_at = 0.0
 
@@ -157,7 +178,7 @@ class FeishuNotifier:
         if cached:
             return cached
         try:
-            response = await self._get_client().get(url)
+            response = await self._get_media_client().get(url)
             response.raise_for_status()
             data = response.content
         except (HTTPError, TimeoutException, ValueError) as e:
@@ -194,10 +215,15 @@ class FeishuNotifier:
         return self._token
 
     async def upload_image(self, data: bytes) -> str:
-        """上传图片，返回 image_key（卡片内嵌图片必须用它）。"""
+        """上传图片，返回 image_key（卡片内嵌图片必须用它）。
+
+        必须用不带 JSON 默认头的 media 客户端：否则 httpx 会把
+        `Content-Type: application/json` 一起发出去，飞书按 JSON 解析 multipart 请求体，
+        直接报 234001 Invalid request param（实测）。
+        """
         token = await self.get_tenant_token()
         try:
-            response = await self._get_client().post(
+            response = await self._get_media_client().post(
                 UPLOAD_IMAGE_URL,
                 headers={'Authorization': f'Bearer {token}'},
                 data={'image_type': 'message'},

@@ -17,7 +17,6 @@ from goofishpostman.sender import (
     build_card_payload,
     linkify_urls,
     pick_header_color,
-    wrap_code_block,
 )
 
 
@@ -89,22 +88,25 @@ def test_send_message_with_title_uses_card() -> None:
     assert body['sign']
 
 
-def test_code_block_fence_grows_when_content_has_backticks() -> None:
-    """内容里本身有反引号时，围栏要加长，避免提前闭合。"""
-    assert wrap_code_block('看这个 ```python```') == '````\n看这个 ```python```\n````'
-    assert wrap_code_block('普通内容') == '```\n普通内容\n```'
+def test_card_details_use_small_text_and_a_divider() -> None:
+    """明细用小号灰字（notation）而不是代码框。
 
-
-def test_card_details_go_into_a_code_block_above_the_content() -> None:
-    """明细（时间/商品）放代码框且排在正文前面，正文自己不进代码框。"""
+    代码框会被飞书多渲染一行「N 行代码」，那行没有意义；小字 + 分割线同样能把
+    「消息属性」和「正文」分开，而且更干净。
+    """
     payload = build_card_payload('买家 → 主力号', '在吗', details={'时间': '09-11 23:55', '商品': '玲娜贝儿钱包'})
     elements = payload['card']['body']['elements']
-    assert elements[0]['content'] == '```\n时间：09-11 23:55\n商品：玲娜贝儿钱包\n```'
-    assert elements[1] == {'tag': 'markdown', 'content': '在吗'}
+    assert elements[0] == {
+        'tag': 'markdown',
+        'content': '**时间** 09-11 23:55 ｜ **商品** 玲娜贝儿钱包',
+        'text_size': 'notation',
+    }
+    assert elements[1] == {'tag': 'hr'}
+    assert elements[2] == {'tag': 'markdown', 'content': '在吗'}
 
 
 def test_card_omits_empty_details() -> None:
-    """取不到的字段不占行；全取不到时连代码框都不出现。
+    """取不到的字段不占位；全取不到时连小字和分割线都不出现。
 
     新会话第一次收到消息时可能还没学到商品标题，这时只显示时间。
     """
@@ -113,7 +115,7 @@ def test_card_omits_empty_details() -> None:
     assert len(build_card_payload('买家 → 主力号', '在吗')['card']['body']['elements']) == 1
 
     only_item = build_card_payload('买家 → 主力号', '在吗', details={'时间': '', '商品': '玲娜贝儿钱包'})
-    assert only_item['card']['body']['elements'][0]['content'] == '```\n商品：玲娜贝儿钱包\n```'
+    assert only_item['card']['body']['elements'][0]['content'] == '**商品** 玲娜贝儿钱包'
 
 
 def test_header_color_is_stable_and_from_the_palette() -> None:

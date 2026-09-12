@@ -268,10 +268,15 @@ def test_notifier_posts_card_with_details_code_block(monkeypatch) -> None:
     card = payload['card']
     assert card['schema'] == '2.0'
     assert card['header']['title']['content'] == '买家 → 主力号'
-    details, body = card['body']['elements']
-    assert details['content'] == '```\n时间：09-11 23:55:32\n商品：玲娜贝儿钱包\n```'
-    # 正文的换行与空行原样保留，且不套代码框
-    assert body == {'tag': 'markdown', 'content': '在吗\n第一行\n\n第三行'}
+    body = next(call for call in client.calls if call['url'].endswith('/bot/v2/hook/abc'))['json']['card']['body']
+    assert body['elements'][0] == {
+        'tag': 'markdown',
+        'content': '**时间** 09-11 23:55:32 ｜ **商品** 玲娜贝儿钱包',
+        'text_size': 'notation',
+    }
+    # 明细与正文之间有分割线；正文的换行与空行原样保留
+    assert body['elements'][1] == {'tag': 'hr'}
+    assert body['elements'][2] == {'tag': 'markdown', 'content': '在吗\n第一行\n\n第三行'}
 
 
 def test_notifier_card_is_signed_when_secret_given(monkeypatch) -> None:
@@ -342,8 +347,13 @@ class FakeImageClient:
 
 
 def make_image_notifier(monkeypatch, client: FakeImageClient, *, app: bool = True) -> FeishuNotifier:
+    """假客户端要挂到两个客户端上：webhook 用 _client，下载/上传用 _media_client。
+
+    （上传必须走后者：前者带 `Content-Type: application/json` 默认头，飞书会报 234001。）
+    """
     notifier = FeishuNotifier(uuid='abc', app_id='cli_1' if app else '', app_secret='appsecret' if app else '')
     monkeypatch.setattr(notifier, '_client', client)
+    monkeypatch.setattr(notifier, '_media_client', client)
     return notifier
 
 

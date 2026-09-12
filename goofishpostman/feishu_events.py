@@ -148,7 +148,7 @@ class FeishuReplyListener:
             if self.on_ignored is not None:
                 run_coroutine_threadsafe(self.on_ignored(detail), loop)
             return
-        logger.info(f'这是一条可用回复（引用 {incoming.target or "无"}）: {incoming.text!r}')
+        logger.info(f'收到一条回复（引用 {incoming.target or "无"}）：{incoming.text}')
         run_coroutine_threadsafe(self.on_reply(*incoming), loop)
 
 

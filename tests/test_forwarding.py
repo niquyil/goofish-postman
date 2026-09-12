@@ -232,18 +232,14 @@ def test_audio_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
 class ReplyLive:
     """假长连接：记录「用这个账号发出去的回复」。"""
 
-    def __init__(self, history: list[dict] | None = None) -> None:
+    def __init__(self) -> None:
         self.sent: list[tuple[str, str, str]] = []
         self.fail_with: Exception | None = None
-        self.history = history or []
 
     async def send_text_to_conversation(self, cid: str, toid: str, text: str) -> None:
         if self.fail_with is not None:
             raise self.fail_with
         self.sent.append((cid, toid, text))
-
-    async def list_all_conversations(self, cid: str) -> list[dict]:
-        return self.history
 
 
 def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) -> None:
@@ -325,22 +321,21 @@ def test_reply_failure_is_reported_to_the_user(tmp_dir, stub_decrypt) -> None:
 
 
 def test_reply_peer_name_falls_back_to_learned_and_card(tmp_dir, stub_decrypt) -> None:
-    """对方昵称的兜底顺序：对照表 → 本次运行学到的 → 卡片标题 → 闲鱼历史 → 对方 uid。"""
+    """对方昵称的兜底顺序：对照表 → 本次运行学到的 → 卡片标题 → 对方账号 id。"""
     from goofishpostman.store import MessageLink
 
     supervisor, notifier = make_supervisor(tmp_dir)
     account = supervisor.store.list_accounts()[0]
     link = MessageLink(account_id=account.id, cid='62367910600', toid='2221610863462')
-    supervisor._lives[account.id] = ReplyLive(history=[{'send_user_id': '2221610863462', 'send_user_name': 'x***1'}])
 
     async def describe() -> str:
         return await supervisor._describe_reply(account, link, 'om-card-1')
 
-    # 1) 报文里学到的（现在每张卡发出时都会记，这里模拟"已经学到"）
+    # 1) 报文里学到的（每张卡片发出时都会记）
     supervisor._remember_peer_name('62367910600', '买家小王')
     assert run(describe()) == '已通过网课学习私人助理（主力号）向买家小王回复'
 
-    # 2) 读回卡片标题解析（升级前的老卡片 + 有 im:message:readonly 权限时）
+    # 2) 升级前的老卡片：读回卡片标题解析（需要 im:message:readonly 权限）
     supervisor._peer_names.clear()
 
     async def fake_title(message_id: str) -> str:
@@ -349,17 +344,11 @@ def test_reply_peer_name_falls_back_to_learned_and_card(tmp_dir, stub_decrypt) -
     notifier.get_card_title = fake_title
     assert run(describe()) == '已通过网课学习私人助理（主力号）向买家小李回复'
 
-    # 3) 卡片读不回来时，问闲鱼要历史（不需要额外权限，昵称会被闲鱼打码）
+    # 3) 卡片也读不回来时退回对方账号 id
     async def no_title(message_id: str) -> str:
         return ''
 
     notifier.get_card_title = no_title
-    assert run(describe()) == '已通过网课学习私人助理（主力号）向x***1回复'
-    assert supervisor._peer_names['62367910600'] == 'x***1'  # 学到后缓存下来
-
-    # 4) 全都拿不到时退回对方 uid
-    supervisor._peer_names.clear()
-    supervisor._lives.clear()
     assert run(describe()) == '已通过网课学习私人助理（主力号）向2221610863462回复'
 
 

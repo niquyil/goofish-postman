@@ -394,41 +394,17 @@ class Supervisor:
 
         - 发送方昵称：报文里学到的真实昵称，没有就退回备注名
         - 发送方账号：Web 端账号卡片上的名字（备注名），没有就退回闲鱼账号 id
-        - 对方昵称：卡片对照表 → 本次运行收到的消息 → 读回卡片标题 → 闲鱼会话历史 → 对方 uid
-          （卡片标题里是完整昵称，但要 im:message:readonly 权限；闲鱼历史不需要额外权限，
-          只是闲鱼对买家的昵称做了打码，形如 x***1）
+        - 对方昵称：卡片对照表 → 本次运行收到的消息 → 读回卡片标题 → 对方账号 id
+          （卡片标题里是完整昵称，但要 im:message:readonly 权限）
         """
         nickname = (account.nickname if account else '') or (account.display_name if account else '') or '未知账号'
         who = (account.name if account else '') or (account.unb if account else '') or ''
         who = who or (account.id if account else '') or link.account_id
         peer = link.peer_name or self._peer_names.get(link.cid, '')
         if not peer and feishu_message_id:
-            # 升级前发出去的老卡片没记对方昵称：先读回卡片标题（完整昵称），再问闲鱼要
+            # 升级前发出去的老卡片没记对方昵称：读回卡片标题看看
             peer = peer_name_from_card(await self.notifier.get_card_title(feishu_message_id))
-        if not peer:
-            peer = await self._lookup_peer_name(account, link)
         return f'已通过{nickname}（{who}）向{peer or link.toid}回复'
-
-    async def _lookup_peer_name(self, account, link) -> str:
-        """从闲鱼会话历史里找回对方昵称（老卡片对照表里没记时的兜底）。
-
-        取最近一条「不是本账号发的」消息的发送方昵称；失败返回空串。
-        """
-        live = self._lives.get(link.account_id)
-        if live is None:
-            return ''
-        try:
-            messages = await live.list_all_conversations(link.cid)
-        except Exception as e:  # noqa: BLE001 - 只是取昵称，失败就换别的兜底
-            logger.debug(f'读取会话历史失败，改用其它兜底值：{type(e).__name__}: {e}')
-            return ''
-        for info in messages:
-            name = (info.get('send_user_name') or '').strip()
-            sender_id = info.get('send_user_id') or ''
-            if name and sender_id and (account is None or sender_id != account.unb):
-                self._remember_peer_name(link.cid, name)
-                return name
-        return ''
 
     def _remember_peer_name(self, cid: str, peer_name: str) -> None:
         """记住「会话 → 对方昵称」（回复反馈里要写「向 xx 回复」）。"""

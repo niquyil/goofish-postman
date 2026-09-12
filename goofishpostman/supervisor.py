@@ -176,6 +176,8 @@ class Supervisor:
         self._seen_messages: dict[str, OrderedDict[str, None]] = {}
         # 会话 → 商品标题（从会话/预热记录里学到，转发时写进卡片明细）
         self._session_titles: dict[str, str] = {}
+        # 账号 → 正在跑的长连接实例（飞书回复要借它发闲鱼消息）
+        self._lives: dict[str, GoofishLive] = {}
         self._listeners: list[Callable[[dict], None]] = []
         self.sync_runtimes()
 
@@ -270,6 +272,8 @@ class Supervisor:
             # 会话/预热记录里带商品标题，先记下来，转发消息时写进卡片明细
             live.on_session_info = self._remember_session_title
             live.handle_message = self._make_handler(account, runtime, mark_healthy)
+            # 记住实例：飞书里回复卡片时要用它的长连接把消息发到闲鱼
+            self._lives[account.id] = live
             try:
                 await live.main()
                 reason = '连接已关闭'
@@ -318,7 +322,7 @@ class Supervisor:
                 # 平台提示条这类噪音只留在网页消息流里，不推飞书
                 return
             try:
-                await self.notifier.send_account_message(
+                message_id = await self.notifier.send_account_message(
                     current.label,
                     message,
                     record.text,
@@ -330,8 +334,45 @@ class Supervisor:
                 )
             except NotifyError as e:
                 self.publish_event('error', current.id, str(e))
+                return
+            # 记下「这条飞书消息 → 这个闲鱼会话」：在飞书里回复它就能发到闲鱼
+            if message_id:
+                self.store.remember_message_link(message_id, current.id, message['cid'], message['send_user_id'])
 
         return handle_message
+
+    # ── 飞书回复 → 闲鱼私信 ────────────────────────────────────────────────────
+    async def forward_feishu_reply(self, feishu_message_id: str, text: str, source_message_id: str = '') -> None:
+        """把飞书里对某张卡片的回复，用对应的账号发到对应的闲鱼会话。
+
+        feishu_message_id 是被引用的那张卡片，source_message_id 是用户那条消息
+        （反馈就回在它下面）。结果以「回复飞书消息」的形式反馈，用户能立刻看到成败。
+        """
+        answer_to = source_message_id or feishu_message_id
+        if not feishu_message_id:
+            await self.notifier.reply_message(
+                answer_to, '请在飞书里「引用回复」要回的那张卡片，我才知道该发到哪个闲鱼会话'
+            )
+            return
+        link = self.store.get_message_link(feishu_message_id)
+        if link is None:
+            await self.notifier.reply_message(answer_to, '这条消息没有对应的闲鱼会话（可能是机器人重启前的旧卡片）')
+            return
+        account = self.store.get(link.account_id)
+        # 和卡片标题保持一致：用「昵称(备注名)」而不是单纯的备注名
+        label = account.label if account else link.account_id
+        live = self._lives.get(link.account_id)
+        if live is None:
+            await self.notifier.reply_message(answer_to, f'{label} 当前没有在监听，没能发出这条回复')
+            return
+        try:
+            await live.send_text_to_conversation(link.cid, link.toid, text)
+        except Exception as e:  # noqa: BLE001 - 任何异常都要告诉用户，而不是静默失败
+            self.publish_event('error', link.account_id, f'飞书回复转发失败: {type(e).__name__}: {e}')
+            await self.notifier.reply_message(answer_to, f'发送失败: {type(e).__name__}: {e}')
+            return
+        self.publish_event('info', link.account_id, f'已用 {label} 把飞书回复发给 {link.toid}')
+        await self.notifier.reply_message(answer_to, f'已用 {label} 发送到闲鱼会话 {link.cid}')
 
     def _build_message_details(self, message) -> dict[str, str]:
         """卡片明细：只要消息发生时间与商品名（取不到的字段不显示）。"""

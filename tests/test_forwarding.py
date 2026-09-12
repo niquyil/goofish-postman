@@ -229,6 +229,77 @@ def test_audio_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
     assert card['media'] == {'kind': 'audio', 'url': 'https://example.com/voice.amr', 'cover': '', 'duration': 8}
 
 
+class ReplyLive:
+    """假长连接：记录「用这个账号发出去的回复」。"""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str, str]] = []
+        self.fail_with: Exception | None = None
+
+    async def send_text_to_conversation(self, cid: str, toid: str, text: str) -> None:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.sent.append((cid, toid, text))
+
+
+def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) -> None:
+    """在飞书里回复卡片 → 用对应的账号发到对应的闲鱼会话，并回一句反馈。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(supervisor, push_frame(encrypted_record()))
+    assert notifier.card_payloads, '应该先推出一张卡片'
+
+    account = supervisor.store.list_accounts()[0]
+    live = ReplyLive()
+    supervisor._lives[account.id] = live
+
+    run(supervisor.forward_feishu_reply('om-1', '有货的，可以直接拍'))
+
+    assert live.sent == [(SESSION_ID, '2221114099805', '有货的，可以直接拍')]
+    assert notifier.replies == [('om-1', f'已用 {ACCOUNT_LABEL} 发送到闲鱼会话 {SESSION_ID}')]
+    assert any('飞书回复' in event.message for event in supervisor.events)
+
+
+def test_reply_to_unknown_card_is_reported(tmp_dir, stub_decrypt) -> None:
+    """回复的要是重启前的旧卡片（对照表里没有），明确告诉用户。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    run(supervisor.forward_feishu_reply('om-unknown', '在吗', 'om-user-1'))
+
+    assert notifier.replies == [('om-user-1', '这条消息没有对应的闲鱼会话（可能是机器人重启前的旧卡片）')]
+
+
+def test_reply_without_quoting_a_card_gets_a_hint(tmp_dir, stub_decrypt) -> None:
+    """只 @ 了机器人、没引用卡片时，教用户怎么用。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    run(supervisor.forward_feishu_reply('', '在吗', 'om-user-1'))
+
+    assert '引用回复' in notifier.replies[0][1]
+
+
+def test_reply_while_account_not_running_is_reported(tmp_dir, stub_decrypt) -> None:
+    """账号没在监听时不硬发，说明原因。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(supervisor, push_frame(encrypted_record()))
+    supervisor._lives.clear()
+    run(supervisor.forward_feishu_reply('om-1', '在吗'))
+
+    assert '没有在监听' in notifier.replies[0][1]
+
+
+def test_reply_failure_is_reported_to_the_user(tmp_dir, stub_decrypt) -> None:
+    """发闲鱼失败也要说清楚，不能静默。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(supervisor, push_frame(encrypted_record()))
+    account = supervisor.store.list_accounts()[0]
+    live = ReplyLive()
+    live.fail_with = RuntimeError('连接已断开')
+    supervisor._lives[account.id] = live
+
+    run(supervisor.forward_feishu_reply('om-1', '在吗'))
+
+    assert '发送失败' in notifier.replies[0][1]
+    assert '连接已断开' in notifier.replies[0][1]
+
+
 def test_extract_message_uid_extracted_from_real_payload() -> None:
     """去重依赖的 messageId 必须能从真实报文里取到。"""
     from goofishpostman.goofish_utils import extract_message_uid

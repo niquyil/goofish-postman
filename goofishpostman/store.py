@@ -21,6 +21,8 @@ from .path import DATA_FILE
 
 # Cookie 里必须存在的字段：unb 是账号 id，缺了连不上
 REQUIRED_COOKIE_KEYS = ('unb', 'tracknick', '_m_h5_tk')
+# 飞书卡片 → 闲鱼会话 的对照表保留条数（防止无限增长）
+_MAX_MESSAGE_LINKS = 500
 
 
 class Account(BaseModel):
@@ -160,10 +162,26 @@ class NotifySettings(BaseModel):
         return bool(self.has_app_credentials and self.chat_id.strip())
 
 
+class MessageLink(BaseModel):
+    """飞书卡片 → 闲鱼会话 的对应关系。
+
+    在飞书里「回复」机器人发的那张卡片时，事件里带的是被回复消息的 message_id，
+    靠这张表才能找回「用哪个账号、发到哪个会话、发给谁」。落盘保留，
+    服务重启后旧卡片照样能回。
+    """
+
+    account_id: str
+    cid: str
+    toid: str
+    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class StoreData(BaseModel):
     accounts: list[Account] = Field(default_factory=list)
     web: WebSettings = Field(default_factory=WebSettings)
     notify: NotifySettings = Field(default_factory=NotifySettings)
+    # 飞书消息 id → 闲鱼会话（只在回复功能里用；条数有上限）
+    message_links: dict[str, MessageLink] = Field(default_factory=dict)
 
 
 class Store:
@@ -255,6 +273,20 @@ class Store:
             raise KeyError(account_id)
         self.data.accounts.remove(account)
         self.save()
+
+    # ── 飞书卡片 → 闲鱼会话 ────────────────────────────────────────────────────
+    def remember_message_link(self, message_id: str, account_id: str, cid: str, toid: str) -> None:
+        """记下「这条飞书消息是从哪个闲鱼会话发出来的」，回复时要用。"""
+        if not message_id:
+            return
+        self.data.message_links[message_id] = MessageLink(account_id=account_id, cid=cid, toid=toid)
+        while len(self.data.message_links) > _MAX_MESSAGE_LINKS:
+            # 字典保持插入顺序，先记的先淘汰（老卡片不太可能再被回复）
+            self.data.message_links.pop(next(iter(self.data.message_links)))
+        self.save()
+
+    def get_message_link(self, message_id: str) -> MessageLink | None:
+        return self.data.message_links.get(message_id)
 
     # ── 配置 ──────────────────────────────────────────────────────────────────
     def update_web(self, **changes: Any) -> WebSettings:

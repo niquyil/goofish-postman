@@ -94,6 +94,8 @@ class GoofishLive:
         self.on_connected = None
         # 非消息帧里可能夹带会话信息（商品标题），有就回调上去（Supervisor 会赋值）
         self.on_session_info = None
+        # 当前长连接（main 里赋值）：回消息时优先复用它，不必为新连接付一次握手
+        self.websocket: ClientConnection | None = None
         # 正在等待响应的 /r/SyncStatus/getState 请求（见 dispatch_message）
         self._pending_sync_mid: str | None = None
 
@@ -253,10 +255,26 @@ class GoofishLive:
 
     async def main(self) -> None:
         async with self._connect() as websocket:
-            async for raw_message in websocket:
-                message = loads(raw_message)
-                await websocket.send(dumps(build_ack(message)))
-                await self.dispatch_message(message, websocket)
+            self.websocket = websocket
+            try:
+                async for raw_message in websocket:
+                    message = loads(raw_message)
+                    await websocket.send(dumps(build_ack(message)))
+                    await self.dispatch_message(message, websocket)
+            finally:
+                self.websocket = None
+
+    async def send_text_to_conversation(self, cid: str, toid: str, text: str) -> None:
+        """往某个会话发一条文本（飞书里回复卡片时用）。
+
+        优先复用正在跑的长连接；账号没在监听时临时开一条（和拉历史记录一样的做法）。
+        """
+        websocket = self.websocket
+        if websocket is not None:
+            await self.send_text(websocket, cid, toid, text)
+            return
+        async with self._connect() as temporary:
+            await self.send_text(temporary, cid, toid, text)
 
     async def synchronize_state(self, websocket: ClientConnection) -> None:
         """主动取一次同步状态（服务端说"同步数据太长"时走这条）。

@@ -37,6 +37,8 @@ class RecordingNotifier(FeishuNotifier):
         self.sent: list[str] = []
         self.cards: list[tuple[str, str]] = []
         self.card_payloads: list[dict] = []
+        # 飞书里的回复（回复功能的反馈）
+        self.replies: list[tuple[str, str]] = []
 
     async def send(self, message: str) -> None:
         self.sent.append(message)
@@ -49,7 +51,7 @@ class RecordingNotifier(FeishuNotifier):
         color: str = '',
         images: tuple[str, ...] = (),
         media: dict | None = None,
-    ) -> None:
+    ) -> str:
         self.cards.append((title, content))
         self.card_payloads.append(
             {
@@ -62,6 +64,10 @@ class RecordingNotifier(FeishuNotifier):
             }
         )
         self.sent.append(f'{title}\n{content}')
+        return f'om-{len(self.card_payloads)}'  # 假装是飞书返回的消息 id
+
+    async def reply_message(self, message_id: str, text: str) -> None:
+        self.replies.append((message_id, text))
 
     async def close(self) -> None:
         return None

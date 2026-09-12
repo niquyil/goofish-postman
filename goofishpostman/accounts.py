@@ -70,6 +70,8 @@ def load_sdk() -> SimpleNamespace:
         CreateMessageRequest,
         CreateMessageRequestBody,
         ListChatRequest,
+        ReplyMessageRequest,
+        ReplyMessageRequestBody,
     )
 
     return SimpleNamespace(
@@ -82,6 +84,8 @@ def load_sdk() -> SimpleNamespace:
         CreateMessageRequest=CreateMessageRequest,
         CreateMessageRequestBody=CreateMessageRequestBody,
         ListChatRequest=ListChatRequest,
+        ReplyMessageRequest=ReplyMessageRequest,
+        ReplyMessageRequestBody=ReplyMessageRequestBody,
     )
 
 
@@ -179,7 +183,7 @@ class FeishuNotifier:
         color: str = DEFAULT_HEADER_COLOR,
         images: Sequence[str] = (),
         media: MessageMedia | None = None,
-    ) -> None:
+    ) -> str:
         """富文本卡片：标题写流向，正文是普通文本，明细是前面的小号灰字（时间/商品名）。
 
         - images 里是图片地址：能上传成功的会内嵌显示（正文里对应的地址行与 `[图片]`
@@ -188,18 +192,23 @@ class FeishuNotifier:
           `[视频]` 标注一起去掉）；语音卡片放不下，先发卡片再补发一条语音消息
           （正文里只去掉地址行，保留 `[语音]` 标注，好和下面的语音对上）。
         传不上去的（格式不支持、超过 30MB、下载失败…）都退回原来那种可点链接。
+
+        返回卡片那条消息的 id（回复功能要拿它当索引），没发出去时是空串。
         """
         body = await self._inline_images(content, images)
         uploaded = await self._prepare_media(media) if media else None
         if uploaded and media:
             body = self._strip_inlined_media(body, media, keep_label=uploaded['kind'] == 'audio')
         video = uploaded if uploaded and uploaded['kind'] == 'video' else None
-        await self._send_message('interactive', content_json(build_card(title, body, details, color, video)))
+        message_id = await self._send_message(
+            'interactive', content_json(build_card(title, body, details, color, video))
+        )
         if uploaded and uploaded['kind'] == 'audio':
             payload = {'file_key': uploaded['file_key']}
             if uploaded['duration']:
                 payload['duration'] = uploaded['duration']
             await self._send_message('audio', content_json(payload))
+        return message_id
 
     def _strip_inlined_media(self, content: str, media: MessageMedia, *, keep_label: bool) -> str:
         """媒体已经发出去了，把正文里的地址行（以及可选的类型标注）去掉。"""
@@ -308,14 +317,14 @@ class FeishuNotifier:
             raise NotifyError(f'上传 {file_type} 失败: {describe_response(response)}')
         return file_key
 
-    async def _send_message(self, msg_type: str, content: str) -> None:
-        """发一条消息（SDK 是同步的，整个「建请求 + 发」都丢线程池里跑）。"""
+    async def _send_message(self, msg_type: str, content: str) -> str:
+        """发一条消息，返回消息 id（SDK 是同步的，整个「建请求 + 发」都丢线程池里跑）。"""
         if not self.can_send_via_app:
             logger.debug('未配置飞书应用凭据或目标群，跳过推送')
-            return
-        await to_thread.run_sync(self._create_message, msg_type, content)
+            return ''
+        return await to_thread.run_sync(self._create_message, msg_type, content)
 
-    def _create_message(self, msg_type: str, content: str) -> None:
+    def _create_message(self, msg_type: str, content: str) -> str:
         module = load_sdk()
         request = (
             module.CreateMessageRequest.builder()
@@ -333,6 +342,31 @@ class FeishuNotifier:
         if not response.success():
             raise NotifyError(f'飞书推送失败: {describe_response(response)}')
         logger.debug('飞书推送成功')
+        return (response.data.message_id if response.data else '') or ''
+
+    async def reply_message(self, message_id: str, text: str) -> None:
+        """在飞书里「回复」某条消息（用于反馈闲鱼那边发没发出去）。"""
+        if not (self.can_send_via_app and message_id):
+            return
+        await to_thread.run_sync(self._reply_message, message_id, text)
+
+    def _reply_message(self, message_id: str, text: str) -> None:
+        module = load_sdk()
+        request = (
+            module.ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                module.ReplyMessageRequestBody.builder()
+                .msg_type('text')
+                .content(content_json(build_text_message(text)))
+                .build()
+            )
+            .build()
+        )
+        response = self._get_client().im.v1.message.reply(request)
+        if not response.success():
+            # 只是提示信息，发不出去不该影响主流程
+            logger.warning(f'回复飞书消息失败: {describe_response(response)}')
 
     async def _inline_images(self, content: str, images: Sequence[str]) -> str:
         """把图片地址换成内嵌图片，返回新的正文。"""
@@ -430,10 +464,12 @@ class FeishuNotifier:
         color: str = DEFAULT_HEADER_COLOR,
         images: Sequence[str] = (),
         media: MessageMedia | None = None,
-    ) -> None:
+    ) -> str:
         """推送一条账号收到的私信：标题是「发送方 → 接收方」，正文是消息内容，
         明细（时间 / 商品名）是正文前面的小号灰字，images / media 是能内嵌或补发的媒体。
 
+        返回飞书那条消息的 id（回复功能靠它找回对应的闲鱼会话）。
+
         account_label 为接收账号的「昵称(账号)」，sender 为发送方昵称。
         """
-        await self.send_card(format_direction(account_label, info, sender), text, details, color, images, media)
+        return await self.send_card(format_direction(account_label, info, sender), text, details, color, images, media)

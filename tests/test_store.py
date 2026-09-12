@@ -248,6 +248,25 @@ class FakeLarkClient:
         return next(request for resource, request in reversed(self.calls) if resource == name)
 
 
+def test_message_links_round_trip_and_are_bounded(tmp_dir) -> None:
+    """飞书消息 → 闲鱼会话 的对照表要能落盘复用，并且不会无限增长。"""
+    from goofishpostman.store import _MAX_MESSAGE_LINKS
+
+    store = Store(tmp_dir / 'a.json')
+    store.remember_message_link('om-1', 'acct-1', '54995284239', '2221114099805')
+
+    reloaded = Store(store.path)
+    link = reloaded.get_message_link('om-1')
+    assert link is not None
+    assert (link.account_id, link.cid, link.toid) == ('acct-1', '54995284239', '2221114099805')
+
+    for index in range(_MAX_MESSAGE_LINKS + 10):
+        store.remember_message_link(f'om-x{index}', 'acct-1', 'cid', 'toid')
+    assert len(store.data.message_links) == _MAX_MESSAGE_LINKS
+    assert store.get_message_link('om-1') is None  # 最早的被挤掉了
+    assert store.get_message_link('') is None
+
+
 # ── 图片内嵌（上传换 image_key）────────────────────────────────────────────────
 IMAGE_URL = 'https://img.alicdn.com/imgextra/i4/O1CN01RSAPMB1dNBgdIEGcB_!!53-xy_chat.heic'
 

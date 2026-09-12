@@ -259,20 +259,30 @@ def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) 
     assert any('飞书回复' in event.message for event in supervisor.events)
 
 
-def test_reply_to_unknown_card_is_reported(tmp_dir, stub_decrypt) -> None:
-    """回复的要是重启前的旧卡片（对照表里没有），明确告诉用户。"""
+def test_reply_to_foreign_message_is_only_logged(tmp_dir, stub_decrypt) -> None:
+    """引用的是别人（或机器人自己）的消息时：不在群里回话，只在日志/事件流里记一笔。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    run(supervisor.forward_feishu_reply('om-unknown', '在吗', 'om-user-1'))
+    run(supervisor.forward_feishu_reply('om-别人的消息', '你们好', 'om-user-1'))
 
-    assert notifier.replies == [('om-user-1', '这条消息没有对应的闲鱼会话（可能是机器人重启前的旧卡片）')]
+    assert notifier.replies == []  # 群里不冒提示
+    assert any('忽略飞书回复' in event.message for event in supervisor.events)
 
 
-def test_reply_without_quoting_a_card_gets_a_hint(tmp_dir, stub_decrypt) -> None:
-    """只 @ 了机器人、没引用卡片时，教用户怎么用。"""
+def test_reply_without_quoting_anything_is_only_logged(tmp_dir, stub_decrypt) -> None:
+    """只是 @ 机器人、没引用任何消息：同样只在日志里记。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     run(supervisor.forward_feishu_reply('', '在吗', 'om-user-1'))
 
-    assert '引用回复' in notifier.replies[0][1]
+    assert notifier.replies == []
+    assert any('没有引用任何消息' in event.message for event in supervisor.events)
+
+
+def test_ignored_feishu_event_shows_up_in_the_event_log(tmp_dir, stub_decrypt) -> None:
+    """事件送到了但用不上（机器人自己发的、非文本）也要能在网页事件日志里看到。"""
+    supervisor, _ = make_supervisor(tmp_dir)
+    run(supervisor.note_ignored_feishu_event('type=image 发送者=user chat=oc_1'))
+
+    assert any('忽略飞书事件' in event.message for event in supervisor.events)
 
 
 def test_reply_while_account_not_running_is_reported(tmp_dir, stub_decrypt) -> None:

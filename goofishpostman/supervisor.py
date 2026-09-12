@@ -345,19 +345,24 @@ class Supervisor:
     async def forward_feishu_reply(self, feishu_message_id: str, text: str, source_message_id: str = '') -> None:
         """把飞书里对某张卡片的回复，用对应的账号发到对应的闲鱼会话。
 
+        只处理「引用的正是机器人从闲鱼转发过来的那张卡片」的消息：其余情况（没引用、
+        引用的是别人的消息）一律不回飞书，免得群里冒出一堆无效提示 ——
+        这类忽略只记在控制台与网页事件流里。
+
         feishu_message_id 是被引用的那张卡片，source_message_id 是用户那条消息
-        （反馈就回在它下面）。结果以「回复飞书消息」的形式反馈，用户能立刻看到成败。
+        （反馈就回在它下面）。只有真的处理了才在飞书里反馈成败。
         """
-        answer_to = source_message_id or feishu_message_id
-        if not feishu_message_id:
-            await self.notifier.reply_message(
-                answer_to, '请在飞书里「引用回复」要回的那张卡片，我才知道该发到哪个闲鱼会话'
-            )
-            return
-        link = self.store.get_message_link(feishu_message_id)
+        link = self.store.get_message_link(feishu_message_id) if feishu_message_id else None
         if link is None:
-            await self.notifier.reply_message(answer_to, '这条消息没有对应的闲鱼会话（可能是机器人重启前的旧卡片）')
+            reason = (
+                '没有引用任何消息'
+                if not feishu_message_id
+                else f'引用的消息 {feishu_message_id} 不是机器人转发的闲鱼卡片'
+            )
+            logger.info(f'忽略飞书回复（{reason}）: {text!r}')
+            self.publish_event('info', '', f'忽略飞书回复（{reason}）: {text}')
             return
+        answer_to = source_message_id or feishu_message_id
         account = self.store.get(link.account_id)
         # 和卡片标题保持一致：用「昵称(备注名)」而不是单纯的备注名
         label = account.label if account else link.account_id
@@ -373,6 +378,10 @@ class Supervisor:
             return
         self.publish_event('info', link.account_id, f'已用 {label} 把飞书回复发给 {link.toid}')
         await self.notifier.reply_message(answer_to, f'已用 {label} 发送到闲鱼会话 {link.cid}')
+
+    async def note_ignored_feishu_event(self, detail: str) -> None:
+        """飞书事件送到了但用不上（机器人自己发的、非文本消息…）：只记事件日志。"""
+        self.publish_event('info', '', f'忽略飞书事件：{detail}')
 
     def _build_message_details(self, message) -> dict[str, str]:
         """卡片明细：只要消息发生时间与商品名（取不到的字段不显示）。"""

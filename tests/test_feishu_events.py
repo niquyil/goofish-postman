@@ -93,6 +93,37 @@ def test_listener_without_credentials_does_not_start_a_thread() -> None:
     assert listener._thread is None
 
 
+def test_listener_reports_ignored_events_to_the_log() -> None:
+    """用不上的事件（非文本、机器人自己发的）也要进网页事件流，便于回查。"""
+    ignored: list[str] = []
+
+    class FakeLoop:
+        def is_closed(self) -> bool:
+            return False
+
+    async def on_reply(*_args: str) -> None:  # pragma: no cover - 不该被调用
+        raise AssertionError('这条事件不该被当成回复')
+
+    async def on_ignored(detail: str) -> None:
+        ignored.append(detail)
+
+    listener = FeishuReplyListener('cli_1', 'sec', on_reply, on_ignored=on_ignored)
+    listener.loop = FakeLoop()
+
+    import goofishpostman.feishu_events as module
+
+    original = module.run_coroutine_threadsafe
+    module.run_coroutine_threadsafe = lambda coro, loop: run(coro)
+    try:
+        listener._on_event(FakeEvent(FakeMessage(message_type='image')))
+        listener._on_event(FakeEvent(FakeMessage(), sender_type='bot'))
+    finally:
+        module.run_coroutine_threadsafe = original
+
+    assert len(ignored) == 2
+    assert all('type=' in detail for detail in ignored)
+
+
 def test_listener_submits_the_reply_to_the_main_loop() -> None:
     """事件回调跑在长连接线程里，必须把活儿交回主事件循环。"""
     recorded: list[tuple[str, str, str]] = []

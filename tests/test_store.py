@@ -250,7 +250,7 @@ class FakeLarkClient:
 
 def test_message_links_round_trip_and_are_bounded(tmp_dir) -> None:
     """飞书消息 → 闲鱼会话 的对照表要能落盘复用，并且不会无限增长。"""
-    from goofishpostman.store import _MAX_MESSAGE_LINKS
+    from goofishpostman.store import _MAX_MESSAGE_LINKS, MessageLink
 
     store = Store(tmp_dir / 'a.json')
     store.remember_message_link('om-1', 'acct-1', '54995284239', '2221114099805')
@@ -260,10 +260,15 @@ def test_message_links_round_trip_and_are_bounded(tmp_dir) -> None:
     assert link is not None
     assert (link.account_id, link.cid, link.toid) == ('acct-1', '54995284239', '2221114099805')
 
-    for index in range(_MAX_MESSAGE_LINKS + 10):
-        store.remember_message_link(f'om-x{index}', 'acct-1', 'cid', 'toid')
+    # 直接把表填满（真写 500 次文件在 Windows 上又慢又容易被占用），再记一条看是否淘汰最早的
+    store.data.message_links = {
+        f'om-seed{index}': MessageLink(account_id='acct-1', cid='cid', toid='toid')
+        for index in range(_MAX_MESSAGE_LINKS)
+    }
+    store.remember_message_link('om-new', 'acct-1', 'cid', 'toid')
     assert len(store.data.message_links) == _MAX_MESSAGE_LINKS
     assert store.get_message_link('om-1') is None  # 最早的被挤掉了
+    assert store.get_message_link('om-new') is not None
     assert store.get_message_link('') is None
 
 

@@ -92,11 +92,19 @@ def extract_text(content: str | None) -> str:
 class FeishuReplyListener:
     """长连接收飞书事件，把「回复卡片」交给主事件循环处理。"""
 
-    def __init__(self, app_id: str, app_secret: str, on_reply: Callable[[str, str, str], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        app_id: str,
+        app_secret: str,
+        on_reply: Callable[[str, str, str], Awaitable[None]],
+        on_ignored: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self.app_id = app_id
         self.app_secret = app_secret
         # on_reply(被引用的卡片消息 id, 回复文本, 用户那条消息 id)
         self.on_reply = on_reply
+        # on_ignored(一行事件描述)：事件送到了但用不上（机器人自己发的、非文本等）
+        self.on_ignored = on_ignored
         self.loop: AbstractEventLoop | None = None
         self._thread: Thread | None = None
 
@@ -128,13 +136,17 @@ class FeishuReplyListener:
     def _on_event(self, event) -> None:
         """SDK 的事件回调（跑在长连接线程里）：解析后交回主循环。"""
         # 每条事件都记一笔：这样「事件没送到」和「送到了但没用」能一眼分开
-        logger.info(f'收到飞书事件：{describe_event(event)}')
-        incoming = parse_incoming_message(event)
-        if incoming is None:
-            return
+        detail = describe_event(event)
+        logger.info(f'收到飞书事件：{detail}')
         loop = self.loop
         if loop is None or loop.is_closed():
             logger.warning('主事件循环不可用，回复丢弃')
+            return
+        incoming = parse_incoming_message(event)
+        if incoming is None:
+            # 用不上的事件也只进日志（网页事件流里能看到"收到了但没处理"）
+            if self.on_ignored is not None:
+                run_coroutine_threadsafe(self.on_ignored(detail), loop)
             return
         logger.info(f'这是一条可用回复（引用 {incoming.target or "无"}）: {incoming.text!r}')
         run_coroutine_threadsafe(self.on_reply(*incoming), loop)

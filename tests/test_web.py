@@ -286,6 +286,29 @@ def test_index_escapes_user_content(tmp_dir) -> None:
     assert '&lt;img src=x onerror=alert(1)&gt;' in html
 
 
+def test_account_error_box_is_always_rendered(tmp_dir) -> None:
+    """回归：账号行模板里必须始终有 .account-error。
+
+    JS 重绘时会克隆 <template id="account-template">，如果模板里缺了这一行，
+    「出错的账号」（例如 Cookie 失效）渲染到一半就会抛异常 —— 列表已经被清空、
+    计数还在，页面上就成了"有数量、没账号"。
+    """
+    harness = build_harness(tmp_dir)
+    account = harness.store.add(name='过期号', cookie=GOOD_COOKIE)
+    harness.supervisor.sync_runtimes()
+    runtime = harness.supervisor.runtimes[account.id]
+    runtime.status = 'error'
+    runtime.error = '登录态已失效（获取 token 失败，Cookie 可能已失效）：请在网页上重新扫码登录'
+
+    html = harness.client.get('/').text
+
+    # 一份在服务端渲染的账号行、一份给 JS 用的模板，两处都要有这一行
+    assert html.count('class="account-error') == 2
+    assert '登录态已失效' in html
+    template = html.split('id="account-template"')[1]
+    assert 'account-error' in template.split('</template>')[0]
+
+
 def test_index_empty_state(tmp_dir) -> None:
     harness = build_harness(tmp_dir)
     html = harness.client.get('/').text

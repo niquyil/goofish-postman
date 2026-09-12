@@ -12,7 +12,7 @@ from goofishpostman.store import Store
 from goofishpostman.supervisor import MessageRecord, Supervisor, compute_next_backoff, format_time
 
 from fixtures import AROUSE_PAYLOAD, encrypted_record, plain_record, push_frame
-from helpers import GOOD_COOKIE, ConnectOnlyLive, FailingLive, FakeLive, RecordingNotifier
+from helpers import GOOD_COOKIE, ConnectOnlyLive, ExpiredCookieLive, FailingLive, FakeLive, RecordingNotifier
 
 
 def make_supervisor(tmp_dir, *, enabled: bool = True) -> tuple[Supervisor, Store, RecordingNotifier]:
@@ -189,6 +189,30 @@ def test_account_with_incomplete_cookie_fails_without_retry(tmp_dir) -> None:
         assert 'cookie' in runtime.error
         assert runtime.task is None  # 不再重试
         assert any('cookie' in e.message for e in supervisor.events)
+
+    run(run_scenario())
+
+
+def test_expired_cookie_is_reported_with_a_way_out(tmp_dir) -> None:
+    """Cookie 过期是最常见的一种启动失败：报错要直接说清楚该怎么处理，
+    并且状态要落到 error（网页上才看得见），而不是只打一行日志。"""
+
+    async def run_scenario() -> None:
+        supervisor, store, _ = make_supervisor(tmp_dir)
+        supervisor.live_factory = ExpiredCookieLive
+        await supervisor.start_enabled()
+        account_id = store.list_accounts()[0].id
+        runtime = supervisor.runtimes[account_id]
+
+        await wait_for(lambda: runtime.status == 'error')
+        assert '登录态已失效' in runtime.error
+        assert '重新扫码登录' in runtime.error
+        assert any('登录态已失效' in e.message for e in supervisor.events)
+        # 退避重试照旧：用户换上新的 Cookie 后不用重启进程就能自愈
+        assert runtime.retry_count >= 1
+        assert runtime.task is not None
+
+        await supervisor.stop_all()
 
     run(run_scenario())
 

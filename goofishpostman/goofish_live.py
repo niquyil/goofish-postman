@@ -51,6 +51,29 @@ _HEART_BEAT_INTERVAL = 15
 _TOKEN_REFRESH_INTERVAL = 600
 
 
+class CookieExpiredError(RuntimeError):
+    """登录态失效（换不到 token）——重连也没用，得重新登录或换 Cookie。
+
+    单独一个类型是为了让上层把提示写清楚，而不是丢一句笼统的异常。
+    """
+
+
+def describe_token_failure(result: object) -> str:
+    """把「换不到 token」的服务端返回翻成一句人话。
+
+    实测 Cookie 失效时服务端回的是 `FAIL_SYS_SESSION_EXPIRED::Session过期`
+    （见 README 的排查记录），所以取 `::` 后面的中文部分；拿不到 ret 时退化成通用说法。
+    """
+    ret = ''
+    if isinstance(result, dict):
+        values = result.get('ret') or []
+        if values:
+            ret = str(values[0]).strip()
+    if not ret:
+        return '服务端没有返回 accessToken'
+    return ret.split('::', 1)[1].strip() if '::' in ret else ret
+
+
 def build_ack(message: dict) -> dict:
     """长连接消息的统一 ACK。"""
     headers = message.get('headers', {})
@@ -174,9 +197,12 @@ class GoofishLive:
         await self.send_message(websocket, cid, toid, TextMessage(text=text))
 
     async def init(self, websocket: ClientConnection) -> None:
-        token = self.goofish.get_token().get('data', {}).get('accessToken', '')
+        # 换 token 失败＝登录态废了（实测服务端回 FAIL_SYS_SESSION_EXPIRED::Session过期），
+        # 把服务端的原话带上去，网页和日志里才看得出到底是哪种失效
+        result = self.goofish.get_token()
+        token = (result.get('data') or {}).get('accessToken', '') if isinstance(result, dict) else ''
         if not token:
-            raise RuntimeError('获取 token 失败，请检查 cookie 是否已失效')
+            raise CookieExpiredError(describe_token_failure(result))
         await websocket.send(
             dumps(
                 {
@@ -231,7 +257,11 @@ class GoofishLive:
         while True:
             await sleep(_TOKEN_REFRESH_INTERVAL)
             try:
-                await to_thread(goofish.refresh_token)
+                result = await to_thread(goofish.refresh_token)
+                ret = str((result.get('ret') or [''])[0]) if isinstance(result, dict) else ''
+                if ret and not ret.startswith('SUCCESS'):
+                    # 续期没成功往往就是登录态快过期了：早点留一行日志，别等断线才知道
+                    logger.warning(f'刷新 token 未成功（{ret}）')
             except Exception as e:  # noqa: BLE001 - 一次失败不能让续期任务退出
                 logger.error(f'刷新 token 失败: {e}')
 

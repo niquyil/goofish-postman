@@ -9,9 +9,9 @@ from asyncio import run
 from json import dumps, loads
 
 from loguru import logger
-from pytest import raises
+from pytest import mark, raises
 
-from goofishpostman.goofish_live import GoofishLive
+from goofishpostman.goofish_live import CookieExpiredError, GoofishLive, describe_token_failure
 from goofishpostman.types import APP_KEY
 
 from fixtures import AROUSE_PAYLOAD, SESSION_ID, encrypted_record, plain_record, push_frame
@@ -58,8 +58,38 @@ def test_init_sends_reg_with_channel_app_key() -> None:
 
 def test_init_raises_when_token_missing() -> None:
     """原实现是 exit(0)（会杀掉宿主进程），现在改为抛异常。"""
-    with raises(RuntimeError, match='token'):
+    with raises(CookieExpiredError, match='没有返回 accessToken'):
         run(make_live('').init(FakeWebSocket()))
+
+
+def test_init_reports_the_server_reason_for_an_expired_cookie() -> None:
+    """Cookie 失效时服务端回的是 FAIL_SYS_SESSION_EXPIRED::Session过期。
+
+    这句原话要带进异常里 —— 网页上和日志里看到的就是它，
+    否则用户只知道"失败了"，不知道是登录态过期还是网络问题。
+    """
+    live = GoofishLive(COOKIE_STR)
+    live.goofish = type(
+        'FakeGoofish', (), {'get_token': lambda self: {'ret': ['FAIL_SYS_SESSION_EXPIRED::Session过期'], 'data': {}}}
+    )()
+
+    with raises(CookieExpiredError, match='Session过期'):
+        run(live.init(FakeWebSocket()))
+
+
+@mark.parametrize(
+    ('result', 'expected'),
+    [
+        ({'ret': ['FAIL_SYS_SESSION_EXPIRED::Session过期']}, 'Session过期'),
+        ({'ret': ['FAIL_SYS_TOKEN_EXOIRED::令牌过期']}, '令牌过期'),
+        ({'ret': ['FAIL_SYS_SERVICE_UNAVAILABLE']}, 'FAIL_SYS_SERVICE_UNAVAILABLE'),
+        ({'ret': []}, '服务端没有返回 accessToken'),
+        ({}, '服务端没有返回 accessToken'),
+        ('not a dict', '服务端没有返回 accessToken'),
+    ],
+)
+def test_describe_token_failure(result, expected: str) -> None:
+    assert describe_token_failure(result) == expected
 
 
 def test_dispatch_message_reaches_handle_message() -> None:

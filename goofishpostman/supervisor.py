@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from loguru import logger
 
 from .accounts import FeishuNotifier, NotifyError, peer_name_from_card
-from .goofish_live import GoofishLive, extract_message_text
+from .goofish_live import CookieExpiredError, GoofishLive, extract_message_text
 from .goofish_utils import (
     extract_message_images,
     extract_message_media,
@@ -281,6 +281,9 @@ class Supervisor:
                 reason = '连接已关闭'
             except CancelledError:
                 raise
+            except CookieExpiredError as e:
+                # 登录态失效：重连也没用，提示说清楚该怎么办（退避照旧，换了 Cookie 就会自愈）
+                reason = f'登录态已失效（{e}）：请在网页上重新扫码登录，或换成新的 Cookie'
             except Exception as e:  # noqa: BLE001 - 任何异常都走重连
                 reason = f'{type(e).__name__}: {e}'
 
@@ -288,7 +291,7 @@ class Supervisor:
             runtime.retry_count += 1
             runtime.status = 'error'
             runtime.error = reason
-            self.publish_event('warning', account.id, f'{account.display_name} {reason}，{backoff:.0f}s 后重连')
+            self.publish_event('warning', account.id, f'{account.display_name} {reason}，{backoff:.0f}s 后重试')
             self._broadcast({'type': 'account', 'account': runtime.to_public()})
             await sleep(backoff)
 

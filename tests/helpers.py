@@ -9,6 +9,7 @@ from asyncio import Event, get_running_loop, sleep
 from typing import ClassVar
 
 from goofishpostman.accounts import FeishuNotifier
+from goofishpostman.goofish_live import CookieExpiredError
 
 GOOD_COOKIE = 'unb=123456; tracknick=tester; _m_h5_tk=abc_1'
 # 与真实报文里的接收方/昵称一致，贴近线上形状
@@ -121,6 +122,18 @@ class FailingLive:
 
     async def main(self) -> None:
         raise RuntimeError('boom')
+
+
+class ExpiredCookieLive:
+    """Cookie 过期：连接时抛 CookieExpiredError，用于验证提示文案。"""
+
+    def __init__(self, cookie: str) -> None:
+        self.cookie = cookie
+        self.handle_message = None
+        self.on_connected = None
+
+    async def main(self) -> None:
+        raise CookieExpiredError('获取 token 失败，Cookie 可能已失效')
 
 
 async def wait_status(supervisor, account_id: str, status: str, timeout: float = 2.0) -> None:

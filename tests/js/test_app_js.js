@@ -16,7 +16,8 @@ const path = require('node:path');
 const assert = require('node:assert');
 const vm = require('node:vm');
 
-const APP_JS = path.join(__dirname, '..', '..', 'goofishpostman', 'webui', 'app.js');
+// 默认跑仓库里的 app.js；APP_JS 可用来自查测试本身（例如塞一份改坏的副本，确认它会失败）
+const APP_JS = process.env.APP_JS || path.join(__dirname, '..', '..', 'goofishpostman', 'webui', 'app.js');
 
 // ── 最小 DOM 实现 ────────────────────────────────────────────────────────────
 let classByTag = () => '';
@@ -28,7 +29,24 @@ class FakeElement {
     this.tagName = tag.toUpperCase();
     this.children = [];
     this.parent = null;
-    this.classList = { add() {}, remove() {}, toggle() {} };
+    // classList 真实生效：只做空实现的话，"出错的行去掉 hidden"这类改动测不出来
+    const classes = () => this._className.split(/\s+/).filter(Boolean);
+    this.classList = {
+      add: (...names) => {
+        const current = classes();
+        this._className = [...current, ...names.filter((n) => !current.includes(n))].join(' ');
+      },
+      remove: (...names) => {
+        this._className = classes().filter((c) => !names.includes(c)).join(' ');
+      },
+      toggle: (name, force) => {
+        const has = classes().includes(name);
+        const wanted = force === undefined ? !has : Boolean(force);
+        if (wanted) this.classList.add(name);
+        else this.classList.remove(name);
+      },
+      contains: (name) => classes().includes(name),
+    };
     this.dataset = {};
     this._text = '';
     this._className = classByTag(tag);
@@ -404,6 +422,79 @@ check('buildAccountRow 有重置昵称按钮', () => {
     last_message_at: null,
   });
   assert.ok(node.querySelector('.reset-nickname'), '缺少重置昵称按钮');
+});
+
+// ── 账号列表重绘 ─────────────────────────────────────────────────────────────
+// 回归："有数量、没账号"。renderAccounts 曾经先 replaceChildren 清空列表、再逐个
+// 渲染条目；一旦某个账号带了 error（Cookie 失效时就是这样），渲染里写到模板中
+// 不存在的 .account-error 就会抛异常 —— 列表空了，计数却还写着账号数。
+const EXPIRED_ACCOUNT = {
+  id: 'a-expired',
+  display_name: 'kisuke',
+  nickname: '网课学习私人助理',
+  enabled: true,
+  status: 'error',
+  error: '登录态已失效（获取 token 失败，Cookie 可能已失效）：请在网页上重新扫码登录',
+  has_cookie: true,
+  cookie_hint: '***tk_1',
+  missing_cookie_keys: [],
+  message_count: 0,
+  retry_count: 2,
+  last_message_at: null,
+};
+
+function setAccounts(list) {
+  vm.runInContext(`accounts = ${JSON.stringify(list)}`, sandbox);
+}
+
+check('renderAccounts 渲染出错的账号：条目和错误原因都在，列表不被清空', () => {
+  setAccounts([EXPIRED_ACCOUNT]);
+  sandbox.renderAccounts();
+
+  const list = document.getElementById('accounts');
+  assert.ok(list.textContent.includes('kisuke'), `列表空了，实际: ${JSON.stringify(list.textContent)}`);
+  assert.ok(list.textContent.includes('登录态已失效'), '缺少错误原因');
+  assert.strictEqual(document.getElementById('account-count').textContent, '1');
+});
+
+check('renderAccounts 一条出错不影响同列表里的其它账号', () => {
+  setAccounts([EXPIRED_ACCOUNT, { ...EXPIRED_ACCOUNT, id: 'a-ok', display_name: '小号', status: 'running', error: '' }]);
+  sandbox.renderAccounts();
+
+  const text = document.getElementById('accounts').textContent;
+  assert.ok(text.includes('kisuke') && text.includes('小号'), `两个账号都该渲染，实际: ${JSON.stringify(text)}`);
+  assert.strictEqual(document.getElementById('account-count').textContent, '2');
+});
+
+check('出错账号的 .account-error 会去掉 hidden，正常账号保持隐藏', () => {
+  setAccounts([EXPIRED_ACCOUNT, { ...EXPIRED_ACCOUNT, id: 'a-ok', error: '' }]);
+  sandbox.renderAccounts();
+
+  const rows = document.getElementById('accounts').querySelectorAll('article');
+  assert.strictEqual(rows.length, 2);
+  const errored = rows[0].querySelector('.account-error');
+  const healthy = rows[1].querySelector('.account-error');
+  assert.ok(errored.textContent.includes('登录态已失效'));
+  assert.ok(!errored.classList.contains('hidden'), '出错的行不该还带 hidden');
+  assert.ok(healthy.classList.contains('hidden'), '正常行应保持 hidden');
+});
+
+check('模板里缺 .account-error 时也只跳过错误行，不炸掉整份列表', () => {
+  const template = document.registry.get('account-template');
+  const article = template.content.firstElementChild;
+  const main = article.querySelector('.account-main');
+  const backup = main.children;
+  main.children = backup.filter((child) => !child._className.includes('account-error'));
+  try {
+    setAccounts([EXPIRED_ACCOUNT]);
+    sandbox.renderAccounts(); // 不应抛异常
+    assert.ok(
+      document.getElementById('accounts').textContent.includes('kisuke'),
+      '缺错误行时账号本身还是要渲染出来',
+    );
+  } finally {
+    main.children = backup;
+  }
 });
 
 // ── 扫码弹窗 ─────────────────────────────────────────────────────────────────

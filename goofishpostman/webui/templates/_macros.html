@@ -7,7 +7,10 @@
       <span class="pill status [[ status_class ]]">[[ status_text ]]</span>
     </div>
     <div class="account-meta">[[ meta ]]</div>
-    [% if problem %]<div class="account-error">[[ problem ]]</div>[% endif %]
+    [# 错误行始终渲染（没错误时加 hidden）：JS 重绘时直接克隆这份模板，
+       模板里缺了这个元素的话，「有错误的账号」（例如 Cookie 失效）一渲染就会报错，
+       整份列表被清空但计数还在 —— 页面上就成了“有数量、没账号” #]
+    <div class="account-error[% if not problem %] hidden[% endif %]">[[ problem ]]</div>
   </div>
   <div class="account-actions">
     <label class="switch" title="启停监听">

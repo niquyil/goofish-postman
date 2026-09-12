@@ -73,10 +73,10 @@ function accountTemplate() {
 
 function renderAccounts() {
   const container = document.getElementById('accounts');
-  container.replaceChildren();
   document.getElementById('account-count').textContent = String(accounts.length);
 
   if (accounts.length === 0) {
+    container.replaceChildren();
     const empty = document.createElement('p');
     empty.className = 'hint';
     empty.textContent = '还没有账号，点右上角「📱 扫码添加」或「+ 粘贴 Cookie」即可。';
@@ -84,9 +84,9 @@ function renderAccounts() {
     return;
   }
 
-  for (const account of accounts) {
-    container.append(buildAccountRow(account));
-  }
+  // 先把条目都建好再替换列表：万一条目渲染出错，也不会留下"有数量、没账号"的空列表
+  const rows = accounts.map((account) => buildAccountRow(account));
+  container.replaceChildren(...rows);
 }
 
 function buildAccountRow(account) {
@@ -111,8 +111,9 @@ function buildAccountRow(account) {
 
   const problem = account.error
     || (account.missing_cookie_keys?.length ? `Cookie 缺少字段: ${account.missing_cookie_keys.join(', ')}` : '');
-  if (problem) {
-    const errorBox = node.querySelector('.account-error');
+  const errorBox = node.querySelector('.account-error');
+  if (problem && errorBox) {
+    // 模板里始终有这一行（没错误时带 hidden），这里只是保险：缺了也不该让整份列表挂掉
     errorBox.textContent = problem;
     errorBox.classList.remove('hidden');
   }

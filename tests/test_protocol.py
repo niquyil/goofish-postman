@@ -3,7 +3,7 @@ from __future__ import annotations
 from base64 import b64decode
 from json import dumps, loads
 
-from pytest import MonkeyPatch, mark
+from pytest import MonkeyPatch, mark, raises
 from requests.cookies import RequestsCookieJar
 
 from goofishpostman.goofish_apis import API, Goofish
@@ -122,6 +122,75 @@ def make_response(payload: dict | None = None):
             return payload if payload is not None else {'ret': ['SUCCESS::'], 'data': {}}
 
     return Response()
+
+
+# ── 启动时换 token 失败（Cookie 过期） ────────────────────────────────────────
+def test_call_mtop_retries_once_after_token_expired() -> None:
+    """令牌过期时服务端会顺手下发新的 _m_h5_tk：带新 token 重试一次就能成功。"""
+
+    class Session:
+        cookies = RequestsCookieJar()
+        calls = 0
+
+        def post(self, **kwargs):
+            Session.calls += 1
+            if Session.calls == 1:
+                return make_response({'ret': ['FAIL_SYS_TOKEN_EXOIRED::令牌过期'], 'data': {}})
+            return make_response()
+
+    api = Goofish.__new__(Goofish)
+    api.session = Session()
+    api.device_id = 'DEV'
+
+    result = api.get_token()
+    assert Session.calls == 2
+    assert result['ret'] == ['SUCCESS::']
+
+
+def test_call_mtop_gives_up_after_one_token_expired_retry() -> None:
+    """服务端一直回"令牌过期"说明登录态本身已经废了：只重试一次，
+    把结果交回上层去判断（原来是无条件递归，会一路撞到 RecursionError）。"""
+
+    class Session:
+        cookies = RequestsCookieJar()
+        calls = 0
+
+        def post(self, **kwargs):
+            Session.calls += 1
+            return make_response({'ret': ['FAIL_SYS_TOKEN_EXOIRED::令牌过期'], 'data': {}})
+
+    api = Goofish.__new__(Goofish)
+    api.session = Session()
+    api.device_id = 'DEV'
+
+    result = api.get_token()
+    assert Session.calls == 2  # 只多打一次请求
+    assert '令牌过期' in result['ret'][0]
+
+
+def test_call_mtop_reports_non_json_response() -> None:
+    """风控页 / 网关错误页返回的是 HTML：要给出能判断方向的错误，而不是裸露的 JSONDecodeError。"""
+
+    class Response:
+        cookies = RequestsCookieJar()
+        status_code = 200
+
+        @staticmethod
+        def json():
+            raise ValueError('Expecting value: line 1 column 1 (char 0)')
+
+    class Session:
+        cookies = RequestsCookieJar()
+
+        def post(self, **kwargs):
+            return Response()
+
+    api = Goofish.__new__(Goofish)
+    api.session = Session()
+    api.device_id = 'DEV'
+
+    with raises(RuntimeError, match='非 JSON'):
+        api.get_token()
 
 
 def test_price_to_cents() -> None:

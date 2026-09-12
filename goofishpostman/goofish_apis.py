@@ -311,7 +311,7 @@ class Goofish:
     def mtop_token(self) -> str:
         return self.session.cookies.get(name='_m_h5_tk', default='').split('_')[0]
 
-    def _call_mtop(self, spec: MtopApi, data: dict[str, Any] | str) -> dict[str, Any]:
+    def _call_mtop(self, spec: MtopApi, data: dict[str, Any] | str, *, retrying: bool = False) -> dict[str, Any]:
         """mtop 接口统一出入参：自动带时间戳、mtop token、sign，并清理过期 cookie。"""
         if not isinstance(data, str):
             data = dumps(data, separators=(',', ':'))
@@ -326,9 +326,18 @@ class Goofish:
                 if key.name in response.cookies and key.domain == '' and key.path == '/':
                     self.session.cookies.clear(domain=key.domain, path=key.path, name=key.name)
 
-        result = response.json()
-        if 'ret' in result and '令牌过期' in result['ret'][0]:
-            return self._call_mtop(spec, data)
+        try:
+            result = response.json()
+        except ValueError as e:
+            # 风控页 / 网关错误页都会走到这里：给一句能判断方向的话，别让上层只看到 JSONDecodeError
+            raise RuntimeError(
+                f'闲鱼接口返回了非 JSON 内容（HTTP {response.status_code}，{spec.api}），可能是网络问题或触发了风控'
+            ) from e
+
+        if not retrying and result.get('ret') and '令牌过期' in result['ret'][0]:
+            # 服务端说 token 过期时会顺手下发新的 _m_h5_tk，带新 token 重试一次即可。
+            # 只重试一次：一直回"令牌过期"说明登录态本身已经废了，继续递归只会变成 RecursionError
+            return self._call_mtop(spec, data, retrying=True)
         return result
 
     def get_default_location(self) -> dict[str, Any]:

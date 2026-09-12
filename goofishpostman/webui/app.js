@@ -270,15 +270,47 @@ function renderNotify() {
   document.getElementById('notify-app-id').value = notifySettings.app_id || '';
   document.getElementById('notify-enabled').checked = Boolean(notifySettings.enabled);
   const state = document.getElementById('notify-state');
-  if (notifySettings.configured && notifySettings.enabled) {
-    state.textContent = '已启用';
+  if (notifySettings.can_send_via_app && notifySettings.enabled) {
+    state.textContent = '机器人应用';
     state.className = 'pill pill-ok';
-  } else if (notifySettings.configured) {
+  } else if (notifySettings.configured && notifySettings.enabled) {
+    state.textContent = 'Webhook';
+    state.className = 'pill pill-ok';
+  } else if (notifySettings.configured || notifySettings.can_send_via_app) {
     state.textContent = '已配置未启用';
     state.className = 'pill pill-warn';
   } else {
     state.textContent = '未配置';
     state.className = 'pill pill-off';
+  }
+}
+
+function renderChatOptions(chats, selected) {
+  const select = document.getElementById('notify-chat-id');
+  select.replaceChildren();
+  if (!chats.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '（没有拿到群，先把机器人拉进群再试）';
+    select.append(option);
+    return;
+  }
+  for (const chat of chats) {
+    const option = document.createElement('option');
+    option.value = chat.chat_id;
+    option.textContent = `${chat.name}（${chat.chat_id}）`;
+    if (chat.chat_id === selected) option.selected = true;
+    select.append(option);
+  }
+}
+
+async function loadNotifyChats() {
+  try {
+    const body = await api('/api/notify/chats');
+    renderChatOptions(body.chats || [], document.getElementById('notify-chat-id').value);
+    toast(`拿到 ${(body.chats || []).length} 个群`);
+  } catch (error) {
+    toast(error.message, true);
   }
 }
 
@@ -291,9 +323,14 @@ async function loadNotify() {
     secret_set: body.secret_set,
     app_id: body.app_id,
     app_secret_set: body.app_secret_set,
+    chat_id: body.chat_id,
     can_upload_images: body.can_upload_images,
+    can_send_via_app: body.can_send_via_app,
+    transport: body.transport,
   };
   renderNotify();
+  renderChatOptions(body.chat_id ? [{ chat_id: body.chat_id, name: body.chat_id }] : [], body.chat_id);
+  if (body.can_upload_images) loadNotifyChats(); // 填了应用凭据就把群列表拉出来
 }
 
 // ── 数据加载与实时流 ────────────────────────────────────────────────────────
@@ -564,11 +601,14 @@ function bind() {
     }
   });
 
+  document.getElementById('notify-load-chats').addEventListener('click', loadNotifyChats);
+
   document.getElementById('notify-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const payload = {
       uuid: document.getElementById('notify-uuid').value.trim(),
       app_id: document.getElementById('notify-app-id').value.trim(),
+      chat_id: document.getElementById('notify-chat-id').value.trim(),
       enabled: document.getElementById('notify-enabled').checked,
     };
     // 密钥类字段留空表示"不改动"，避免每次保存都把已存的密钥清掉

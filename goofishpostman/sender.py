@@ -2,6 +2,7 @@ from base64 import b64encode
 from functools import cached_property
 from hashlib import sha256
 from hmac import new
+from json import dumps
 from re import compile as compile_pattern
 from time import time
 from zlib import crc32
@@ -10,10 +11,7 @@ from httpx import AsyncClient
 from loguru import logger
 
 FEISHU_HEADERS = {'Content-Type': 'application/json'}
-# 飞书自定义机器人的 webhook。这里是手写 HTTP 请求，没有用官方 lark-oapi，原因：
-# 1. 那个 SDK 是 OpenAPI 应用 SDK，全包搜不到 bot/v2（自定义机器人）相关代码，
-#    用它就必须改成自建应用（app_id/app_secret + 群 chat_id），飞书侧还要开权限、发版；
-# 2. 它所有版本都要求 websockets<16，与闲鱼长连接的 websockets>=17 冲突。
+# 飞书自定义机器人的 webhook（现在只作为没配自建应用时的备用通道）
 WEBHOOK_TEMPLATE = 'https://open.feishu.cn/open-apis/bot/v2/hook/{uuid}'
 
 
@@ -30,6 +28,15 @@ def generate_feishu_sign(secret: str, timestamp: int) -> str:
 def build_text_payload(message: str, secret: str | None = None) -> dict:
     payload: dict = {'msg_type': 'text', 'content': {'text': message}}
     return _with_sign(payload, secret)
+
+
+def build_app_message(receive_id: str, msg_type: str, content: dict) -> dict:
+    """自建应用发消息的请求体。
+
+    与 webhook 形状不同：`content` 必须是**JSON 字符串**（webhook 那边是对象），
+    也没有 timestamp/sign —— 签名只属于自定义机器人。
+    """
+    return {'receive_id': receive_id, 'msg_type': msg_type, 'content': dumps(content, ensure_ascii=False)}
 
 
 # 卡片标题可用的配色（不同账号固定用不同颜色，扫一眼就知道是哪个号收到的）

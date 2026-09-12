@@ -177,7 +177,10 @@ def test_notify_roundtrip_never_returns_secret(tmp_dir) -> None:
         'secret_set': False,
         'app_id': '',
         'app_secret_set': False,
+        'chat_id': '',
         'can_upload_images': False,
+        'can_send_via_app': False,
+        'transport': 'none',
         'enabled': True,
     }
 
@@ -193,6 +196,9 @@ def test_notify_roundtrip_never_returns_secret(tmp_dir) -> None:
     assert body['app_id'] == 'cli_1'
     assert body['app_secret_set'] is True
     assert body['can_upload_images'] is True  # 两个都填了才敢说能内嵌图片
+    # 还没选目标群，所以仍然走 webhook
+    assert body['can_send_via_app'] is False
+    assert body['transport'] == 'webhook'
     assert 'topsecret' not in str(body)
     assert 'appsecret' not in str(body)
     assert harness.store.data.notify.secret == 'topsecret'
@@ -258,7 +264,7 @@ def test_index_renders_everything_server_side(tmp_dir) -> None:
     assert '在吗' in html  # 消息
     assert '扫码登录成功' in html  # 事件
     assert 'value="uuid-1"' in html  # 飞书配置回填
-    assert '已启用' in html
+    assert 'Webhook' in html  # 只配了 webhook 时发送方式就是它
     assert '还没有账号' not in html  # 有账号就不显示空态
     assert '[[' not in html and ']]' not in html  # 定界符已全部解析
 

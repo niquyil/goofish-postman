@@ -9,15 +9,24 @@ from httpx import AsyncClient, HTTPError, TimeoutException
 from loguru import logger
 
 from .goofish_utils import CONTENT_TYPE_LABELS
-from .sender import DEFAULT_HEADER_COLOR, FEISHU_HEADERS, build_card_payload, build_text_payload, build_webhook_url
+from .sender import (
+    DEFAULT_HEADER_COLOR,
+    FEISHU_HEADERS,
+    build_app_message,
+    build_card_payload,
+    build_text_payload,
+    build_webhook_url,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from .types import MessageInfo
 
-# 飞书开放平台（自建应用）接口：换 token 与上传图片
+# 飞书开放平台（自建应用）接口：换 token、发消息、列群、上传图片
 TENANT_TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal'
+MESSAGE_URL = 'https://open.feishu.cn/open-apis/im/v1/messages'
+CHAT_LIST_URL = 'https://open.feishu.cn/open-apis/im/v1/chats'
 UPLOAD_IMAGE_URL = 'https://open.feishu.cn/open-apis/im/v1/images'
 # token 有效期 2 小时，这里提前 5 分钟续期
 _TOKEN_SAFETY_MARGIN = 300
@@ -81,19 +90,27 @@ def drop_lines(text: str, values: set[str]) -> str:
 
 
 class FeishuNotifier:
-    """多账号共用一个机器人；未配置 uuid 时所有发送都是空操作。
+    """把消息发到飞书。
 
-    另外可选配「企业自建应用」的 app_id / app_secret：飞书卡片不接受外部图片地址，
-    图片要先经自建应用上传换成 image_key 才能在卡片里直接显示。
+    优先用「企业自建应用」发送（app_id + app_secret + chat_id，机器人要在那个群里）：
+    这条通道能内嵌图片，消息以机器人应用的身份发出。三者缺任意一个就退回自定义机器人的
+    webhook（uuid / secret），两套都配了就只用自建应用，不会重复发送。
     """
 
     def __init__(
-        self, uuid: str = '', secret: str = '', app_id: str = '', app_secret: str = '', timeout: float = 10.0
+        self,
+        uuid: str = '',
+        secret: str = '',
+        app_id: str = '',
+        app_secret: str = '',
+        chat_id: str = '',
+        timeout: float = 10.0,
     ) -> None:
         self.uuid = uuid.strip()
         self.secret = secret.strip()
         self.app_id = app_id.strip()
         self.app_secret = app_secret.strip()
+        self.chat_id = chat_id.strip()
         self.timeout = timeout
         self._client: AsyncClient | None = None
         self._media_client: AsyncClient | None = None
@@ -112,6 +129,10 @@ class FeishuNotifier:
     @property
     def can_upload_images(self) -> bool:
         return bool(self.app_id and self.app_secret)
+
+    @property
+    def can_send_via_app(self) -> bool:
+        return bool(self.can_upload_images and self.chat_id)
 
     def _get_client(self) -> AsyncClient:
         # httpx 的 AsyncClient 可以跨事件循环复用，这里按需创建并缓存
@@ -141,6 +162,9 @@ class FeishuNotifier:
 
     async def send(self, message: str) -> None:
         """纯文本推送（告警等不需要代码框的场景）。"""
+        if self.can_send_via_app:
+            await self._send_via_app(build_app_message(self.chat_id, 'text', {'text': message}))
+            return
         await self._post(build_text_payload(message, self.secret))
 
     async def send_card(
@@ -151,13 +175,39 @@ class FeishuNotifier:
         color: str = DEFAULT_HEADER_COLOR,
         images: Sequence[str] = (),
     ) -> None:
-        """富文本卡片：标题写流向，正文是普通文本，details 放前面的代码框里（时间/商品名）。
+        """富文本卡片：标题写流向，正文是普通文本，明细是前面的小号灰字（时间/商品名）。
 
-        images 里是图片地址：能上传成功的会内嵌显示（正文里对应的地址行被替换掉），
-        传不上去的原样保留成可点链接 —— 没配自建应用时就是这个行为。
+        images 里是图片地址：能上传成功的会内嵌显示（正文里对应的地址行与 `[图片]`
+        标注一起去掉），传不上去的原样保留成可点链接。
         """
         body = await self._inline_images(content, images)
+        if self.can_send_via_app:
+            # 自建应用发卡片：content 直接就是卡片对象（没有 webhook 那层 msg_type/card 包装），
+            # 也用不着签名 —— timestamp/sign 只属于自定义机器人
+            card = build_card_payload(title, body, details, color=color)
+            await self._send_via_app(build_app_message(self.chat_id, 'interactive', card['card']))
+            return
         await self._post(build_card_payload(title, body, details, self.secret, color))
+
+    async def _send_via_app(self, payload: dict) -> None:
+        """用自建应用发消息（需要 tenant_access_token）。"""
+        if not self.can_send_via_app:
+            logger.debug('未配置自建应用或目标群，跳过')
+            return
+        token = await self.get_tenant_token()
+        try:
+            response = await self._get_client().post(
+                MESSAGE_URL,
+                params={'receive_id_type': 'chat_id'},
+                headers={'Authorization': f'Bearer {token}'},
+                json=payload,
+            )
+            body = response.json()
+        except (HTTPError, TimeoutException, ValueError) as e:
+            raise NotifyError(f'飞书推送失败: {e}') from e
+        if body.get('code') != 0:
+            raise NotifyError(f'飞书返回错误: {body}')
+        logger.debug(f'飞书推送成功（自建应用）: {body.get("msg")}')
 
     async def _inline_images(self, content: str, images: Sequence[str]) -> str:
         """把图片地址换成内嵌图片，返回新的正文。"""
@@ -220,6 +270,28 @@ class FeishuNotifier:
         self._token_expires_at = time() + max(0, int(body.get('expire', 7200)) - _TOKEN_SAFETY_MARGIN)
         return self._token
 
+    async def list_chats(self) -> list[dict[str, str]]:
+        """机器人应用所在的群列表（界面上让用户挑一个当推送目标）。
+
+        需要 `im:chat:readonly`（或 `im:chat`）权限，且机器人必须已经进群。
+        """
+        token = await self.get_tenant_token()
+        try:
+            response = await self._get_client().get(
+                CHAT_LIST_URL, params={'page_size': 50}, headers={'Authorization': f'Bearer {token}'}
+            )
+            body = response.json()
+        except (HTTPError, TimeoutException, ValueError) as e:
+            raise NotifyError(f'获取群列表失败: {e}') from e
+        if body.get('code') != 0:
+            raise NotifyError(f'获取群列表失败: {body}')
+        items = (body.get('data') or {}).get('items') or []
+        return [
+            {'chat_id': item.get('chat_id', ''), 'name': item.get('name') or item.get('chat_id', '')}
+            for item in items
+            if isinstance(item, dict) and item.get('chat_id')
+        ]
+
     async def upload_image(self, data: bytes) -> str:
         """上传图片，返回 image_key（卡片内嵌图片必须用它）。
 
@@ -267,7 +339,7 @@ class FeishuNotifier:
         images: Sequence[str] = (),
     ) -> None:
         """推送一条账号收到的私信：标题是「发送方 → 接收方」，正文是消息内容，
-        details（时间 / 商品名）放进正文前面的代码框，images 是能内嵌的图片地址。
+        明细（时间 / 商品名）是正文前面的小号灰字，images 是能内嵌的图片地址。
 
         account_label 为接收账号的「昵称(账号)」，sender 为发送方昵称。
         """

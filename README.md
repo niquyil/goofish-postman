@@ -92,7 +92,7 @@ uv sync
 
 ## 方式一：Web 管理台（推荐，支持多账号汇总）
 
-同时登录多个闲鱼账号，把各账号收到的私信汇总推送到**同一个飞书机器人**，并在网页里管理账号。
+同时登录多个闲鱼账号，把各账号收到的私信汇总推送到**同一个飞书机器人**（应用机器人或自定义机器人），并在网页里管理账号。
 
 ```bash
 uv run python -m goofishpostman web
@@ -101,9 +101,11 @@ uv run python -m goofishpostman web
 
 打开页面后：
 
-1. 在「飞书推送」里填自定义机器人的 **UUID**（`https://open.feishu.cn/open-apis/bot/v2/hook/` 后面那一段），
-   若机器人开启了「签名校验」再把密钥填上，保存即生效；
-   想让**图片直接显示在卡片里**（而不是给个链接），再填「应用 ID / 应用密钥」——见下面的说明，不填也能正常用；
+1. 在「飞书推送」里配置发送方式：
+   - **机器人应用（推荐）**：填**应用 ID / 应用密钥**，点「获取群列表」挑一个**目标群**保存 ——
+     消息以应用机器人身份发出，图片能直接内嵌（见下面的「用机器人应用发送」）；
+   - **自定义机器人（备用）**：填 webhook 的 **UUID**（`https://open.feishu.cn/open-apis/bot/v2/hook/`
+     后面那一段），开了「签名校验」再把密钥填上。两套都填时只用机器人应用，不会重复发送；
 2. 添加账号有两种方式：
    - **📱 扫码添加（推荐）**：点按钮后用手机闲鱼 App 扫二维码并在手机上确认，登录成功后账号会自动建好并开始监听；
    - **粘贴 Cookie**：从浏览器开发者工具复制登录后的完整 Cookie。
@@ -174,27 +176,39 @@ uv run python -m goofishpostman web
 >   而「不是监听账号自己触发的」不用额外判断：这类卡片的 `senderUserId` 就是操作方
 >   （实测自己拍下的卡片 `senderUserId` = 本账号 unb），已有的「自己发的不转发」逻辑会先过滤掉。
 
-#### 图片直接显示在卡片里（可选）
+#### 用机器人应用发送（推荐）
 
-飞书卡片只接受 `image_key`，把外部图片地址写进 markdown 会被直接拒收整张卡片
-（实测 `ErrCode 200570 invalid image keys`），而 `image_key` 只能用**企业自建应用**上传拿。
-想开这个功能就填「应用 ID / 应用密钥」，流程：
+推荐用**企业自建应用**发送：消息以应用机器人身份发出，图片能直接内嵌在卡片里
+（飞书卡片只接受 `image_key`，把外部图片地址写进 markdown 会被拒收整张卡片，
+实测 `ErrCode 200570 invalid image keys`）。配置流程：
 
 1. [飞书开放平台](https://open.feishu.cn/app) → 创建**企业自建应用**，拿到 `App ID` 与 `App Secret`；
-2. 「权限管理」里开通 `im:resource`（上传图片）与 `im:message`（发消息），然后**创建版本并发布**；
-3. 应用详情 →「凭证与基础信息」里的 App ID / App Secret 填进网页的「应用 ID / 应用密钥」并保存。
+2. 「权限管理」里开通：
+   - `im:message`（以应用身份发消息）
+   - `im:resource`（上传图片换 `image_key`）
+   - `im:chat:readonly`（网页上「获取群列表」用，方便挑目标群）
+   然后**创建版本并发布**（改权限后要重新发版，否则接口返回权限错误）；
+3. 把应用机器人**拉进接收消息的群**（群设置 → 添加机器人 → 选这个应用）；
+4. 应用详情 →「凭证与基础信息」里的 App ID / App Secret 填进网页，点「获取群列表」选目标群，保存。
 
-填好之后：收到图片消息会先把图片下载下来、调
-`POST /open-apis/im/v1/images`（`image_type=message`）换成 `image_key`，再放进卡片正文内嵌显示；
-**同一张图只上传一次**（按地址缓存）。内嵌成功时正文里那句 `[图片]` 标注与地址行都会被去掉，
-只留图片本身（图片就在眼前，不用再标一遍）。没填、或上传/下载失败时自动退回可点开的链接，
-不会漏消息。卡片依旧由原来的自定义机器人 webhook 发送，自建应用只用来换 `image_key`（实测可行）。
+保存后 `accounts.json` 的 `notify` 里会多出 `chat_id`（形如 `oc_xxx`），发送方式显示为「机器人应用」。
+没填应用凭据、或没选目标群时自动退回自定义机器人的 webhook，老配置照常可用（两套都配了只用应用，
+不会重复发送）。
 
-两个踩过的坑，供参考：
+发送细节：
+- 接口 `POST /open-apis/im/v1/messages?receive_id_type=chat_id`，`content` 是 **JSON 字符串**，
+  且没有 webhook 那套 `timestamp`/`sign`（签名只属于自定义机器人）；
+- 收到图片消息会先把图片下载下来、调 `POST /open-apis/im/v1/images`（`image_type=message`）
+  换成 `image_key`，再放进卡片正文内嵌显示；**同一张图只上传一次**（按地址缓存）；
+- 内嵌成功时正文里那句 `[图片]` 标注与地址行都会被去掉，只留图片本身；
+  上传/下载失败时自动退回可点开的链接，不会漏消息。
+
+三个踩过的坑，供参考：
 - 上传必须用**不带** `Content-Type: application/json` 默认头的 HTTP 客户端，否则飞书会把
   multipart 请求体当 JSON 解析，直接报 `234001 Invalid request param`；
 - 下载闲鱼图片要带 `Referer: https://www.goofish.com/`，不带的话部分地址会返回 420
-  （实测同一张图裸请求 420、加 Referer 后 200）。
+  （实测同一张图裸请求 420、加 Referer 后 200）；
+- 列群接口要 `im:chat:readonly` 权限，且机器人必须已经在群里，否则拿不到群列表。
 
 > 账号之间互发消息时，双方的连接都会收到同一条推送：
 > **发送方那一侧不推送**（那是自己发出去的），只有**接收方那一侧**会推。
@@ -237,7 +251,11 @@ uv run python -m goofishpostman web --data /path/to/accounts.json # 改用其它
 
 ```dotenv
 COOKIE_STR=复制出来的完整 Cookie 字符串
-# 飞书自定义机器人（用于把收到的私信转发出去，可留空）
+# 飞书推送（用于把收到的私信转发出去，可留空）：
+# 推荐填应用凭据 + 目标群；只填 UUID/SECRET 则走自定义机器人 webhook
+APP_ID=cli_xxxxxxxx
+APP_SECRET=your_app_secret
+CHAT_ID=oc_xxxxxxxx
 UUID=your_feishu_bot_uuid
 SECRET=your_feishu_bot_secret
 ```
@@ -292,6 +310,7 @@ tests/                 # 离线回归测试（协议、长连接、多账号调�
 | POST   | `/api/accounts/{id}/restart` | 重连该账号              |
 | GET    | `/api/notify`             | 读取飞书配置（不回传密钥）          |
 | PUT    | `/api/notify`             | 更新飞书配置                |
+| GET    | `/api/notify/chats`       | 用应用凭据列出机器人所在的群（挑目标群用）  |
 | POST   | `/api/qr/start`           | 生成登录二维码（返回 PNG）        |
 | GET    | `/api/qr/{session_id}`    | 轮询扫码状态，确认后自动建号        |
 | DELETE | `/api/qr/{session_id}`    | 取消本次扫码                |

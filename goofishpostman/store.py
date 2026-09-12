@@ -138,16 +138,18 @@ class WebSettings(BaseModel):
 
 
 class NotifySettings(BaseModel):
-    """飞书机器人配置（留空 uuid 表示不推送）。
+    """飞书推送配置。
 
-    app_id / app_secret 是「企业自建应用」的凭据，只为上传图片拿 image_key 用
-    （飞书卡片不接受外部图片地址）；不填则图片消息退回给可点开的链接。
+    推荐用「企业自建应用」发消息：填 app_id / app_secret / chat_id（机器人所在的群），
+    图片也能直接内嵌。三者缺任意一个就退回自定义机器人的 webhook（uuid / secret）。
     """
 
     uuid: str = ''
     secret: str = ''
     app_id: str = ''
     app_secret: str = ''
+    # 自建应用发送目标（群 id，形如 oc_xxx）；机器人必须已经在这个群里
+    chat_id: str = ''
     enabled: bool = True
 
     @property
@@ -157,6 +159,18 @@ class NotifySettings(BaseModel):
     @property
     def can_upload_images(self) -> bool:
         return bool(self.app_id.strip() and self.app_secret.strip())
+
+    @property
+    def can_send_via_app(self) -> bool:
+        """三个都填了才走机器人应用，否则退回 webhook。"""
+        return bool(self.can_upload_images and self.chat_id.strip())
+
+    @property
+    def transport(self) -> str:
+        """当前生效的发送方式，界面上用来提示。"""
+        if self.can_send_via_app:
+            return 'app'
+        return 'webhook' if self.configured else 'none'
 
 
 class StoreData(BaseModel):

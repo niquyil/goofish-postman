@@ -39,7 +39,7 @@ from loguru import logger
 from pydantic import BaseModel
 from uvicorn import Config, Server
 
-from .accounts import FeishuNotifier
+from .accounts import FeishuNotifier, NotifyError
 from .goofish_apis import create_login_session
 from .path import BUILD_STAMP, STATIC_DIR, TEMPLATE_DIR
 from .qrlogin import (
@@ -146,6 +146,7 @@ class NotifyBody(BaseModel):
     secret: str | None = None
     app_id: str | None = None
     app_secret: str | None = None
+    chat_id: str | None = None
     enabled: bool | None = None
 
 
@@ -223,6 +224,7 @@ class WebApp:
             (app.post, '/api/accounts/{account_id}/reset-nickname', self.api_reset_nickname),
             (app.get, '/api/notify', self.api_get_notify),
             (app.put, '/api/notify', self.api_update_notify),
+            (app.get, '/api/notify/chats', self.api_list_notify_chats),
             (app.post, '/api/qr/start', self.api_start_qr_login),
             (app.get, '/api/qr/{session_id}', self.api_get_qr_status),
             (app.delete, '/api/qr/{session_id}', self.api_cancel_qr_login),
@@ -255,7 +257,10 @@ class WebApp:
                     'secret_set': bool(self.store.data.notify.secret),
                     'app_id': self.store.data.notify.app_id,
                     'app_secret_set': bool(self.store.data.notify.app_secret),
+                    'chat_id': self.store.data.notify.chat_id,
                     'can_upload_images': self.store.data.notify.can_upload_images,
+                    'can_send_via_app': self.store.data.notify.can_send_via_app,
+                    'transport': self.store.data.notify.transport,
                 },
             },
         )
@@ -371,10 +376,27 @@ class WebApp:
                 'secret_set': bool(notify.secret),
                 'app_id': notify.app_id,
                 'app_secret_set': bool(notify.app_secret),
+                'chat_id': notify.chat_id,
                 'can_upload_images': notify.can_upload_images,
+                'can_send_via_app': notify.can_send_via_app,
+                'transport': notify.transport,
                 'enabled': notify.enabled,
             }
         )
+
+    async def api_list_notify_chats(self) -> Response:
+        """用自建应用列出机器人所在的群（界面上挑一个当推送目标）。"""
+        notify = self.store.data.notify
+        if not notify.can_upload_images:
+            return ChineseJSONResponse({'ok': False, 'error': '先填应用 ID 与密钥'}, status_code=400)
+        notifier = FeishuNotifier(app_id=notify.app_id, app_secret=notify.app_secret)
+        try:
+            chats = await notifier.list_chats()
+        except NotifyError as e:
+            return ChineseJSONResponse({'ok': False, 'error': str(e)}, status_code=502)
+        finally:
+            await notifier.close()
+        return ChineseJSONResponse({'ok': True, 'chats': chats})
 
     async def api_update_notify(self, body: NotifyBody) -> Response:
         changes = {key: value for key, value in body.model_dump().items() if value is not None}
@@ -382,11 +404,22 @@ class WebApp:
         # 重建推送器，让新配置立即生效
         await self.supervisor.notifier.close()
         self.supervisor.notifier = FeishuNotifier(
-            uuid=notify.uuid, secret=notify.secret, app_id=notify.app_id, app_secret=notify.app_secret
+            uuid=notify.uuid,
+            secret=notify.secret,
+            app_id=notify.app_id,
+            app_secret=notify.app_secret,
+            chat_id=notify.chat_id,
         )
-        self.supervisor.publish_event('info', '', '飞书推送配置已更新')
+        self.supervisor.publish_event('info', '', f'飞书推送配置已更新（发送方式：{notify.transport}）')
         return ChineseJSONResponse(
-            {'ok': True, 'uuid': notify.uuid, 'can_upload_images': notify.can_upload_images, 'enabled': notify.enabled}
+            {
+                'ok': True,
+                'uuid': notify.uuid,
+                'can_upload_images': notify.can_upload_images,
+                'can_send_via_app': notify.can_send_via_app,
+                'transport': notify.transport,
+                'enabled': notify.enabled,
+            }
         )
 
     # ── 扫码登录 ──────────────────────────────────────────────────────────────

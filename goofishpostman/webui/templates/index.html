@@ -16,9 +16,11 @@
     <section class="card" id="notify-card">
       <div class="card-head">
         <h2>飞书推送</h2>
-        [% if notify.configured and notify.enabled %]
-          <span id="notify-state" class="pill pill-ok">已启用</span>
-        [% elif notify.configured %]
+        [% if notify.can_send_via_app and notify.enabled %]
+          <span id="notify-state" class="pill pill-ok">机器人应用</span>
+        [% elif notify.configured and notify.enabled %]
+          <span id="notify-state" class="pill pill-ok">Webhook</span>
+        [% elif notify.configured or notify.can_send_via_app %]
           <span id="notify-state" class="pill pill-warn">已配置未启用</span>
         [% else %]
           <span id="notify-state" class="pill pill-off">未配置</span>
@@ -26,33 +28,44 @@
       </div>
       <form id="notify-form" class="grid">
         <label>
-          <span>机器人 UUID</span>
-          <input id="notify-uuid" type="text" value="[[ notify.uuid ]]" placeholder="open-apis/bot/v2/hook/ 后面那一段" autocomplete="off">
-        </label>
-        <label>
-          <span>签名密钥（可选）</span>
-          <input id="notify-secret" type="password" placeholder="留空表示不签名" autocomplete="new-password">
-        </label>
-        <label>
-          <span>应用 ID（可选，用于内嵌图片）</span>
-          <input id="notify-app-id" type="text" value="[[ notify.app_id ]]" placeholder="cli_ 开头，自建应用才有" autocomplete="off">
+          <span>应用 ID</span>
+          <input id="notify-app-id" type="text" value="[[ notify.app_id ]]" placeholder="cli_ 开头" autocomplete="off">
         </label>
         <label>
           <span>应用密钥</span>
-          <input id="notify-app-secret" type="password" placeholder="留空表示不上传图片" autocomplete="new-password">
+          <input id="notify-app-secret" type="password" placeholder="留空表示不改动" autocomplete="new-password">
+        </label>
+        <label>
+          <span>目标群</span>
+          <select id="notify-chat-id">
+            [% if notify.chat_id %]<option value="[[ notify.chat_id ]]" selected>[[ notify.chat_id ]]</option>[% else %]<option value="">（未选择）</option>[% endif %]
+          </select>
         </label>
         <label class="check">
           <input id="notify-enabled" type="checkbox"[% if notify.enabled %] checked[% endif %]>
           <span>启用推送</span>
         </label>
+        <button type="button" id="notify-load-chats" class="ghost">获取群列表</button>
         <button type="submit">保存并生效</button>
       </form>
-      [% if notify.configured %]
-        <p class="hint">
-          已保存密钥：[[ '是' if notify.secret_set else '否' ]]
-          ｜ 图片内嵌：[[ '已开启' if notify.can_upload_images else '未开启（图片只给链接）' ]]
-        </p>
-      [% endif %]
+      <details class="legacy">
+        <summary>自定义机器人（备用通道）</summary>
+        <div class="grid">
+          <label>
+            <span>机器人 UUID</span>
+            <input id="notify-uuid" type="text" value="[[ notify.uuid ]]" placeholder="open-apis/bot/v2/hook/ 后面那一段" autocomplete="off">
+          </label>
+          <label>
+            <span>签名密钥（可选）</span>
+            <input id="notify-secret" type="password" placeholder="留空表示不签名" autocomplete="new-password">
+          </label>
+        </div>
+      </details>
+      <p class="hint">
+        当前发送方式：[[ {'app': '机器人应用', 'webhook': '自定义机器人 webhook', 'none': '未配置'}[notify.transport] ]]
+        ｜ 已保存密钥：[[ '是' if notify.secret_set else '否' ]]
+        ｜ 图片内嵌：[[ '已开启' if notify.can_upload_images else '未开启（图片只给链接）' ]]
+      </p>
     </section>
 
     <section class="card">

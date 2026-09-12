@@ -543,7 +543,13 @@ class Supervisor:
             del buffer[: len(buffer) - limit]
 
     def publish_event(self, level: Literal['info', 'warning', 'error'], account_id: str, message: str) -> None:
-        logger.log(level.upper(), f'[{account_id}] {message}')
+        """记一条事件：控制台日志 + 事件流（网页实时推送）。
+
+        account_id 为空表示与具体账号无关（例如飞书配置、全局的回复转发），
+        这时不显示 `[]` 前缀。
+        """
+        prefix = f'[{account_id}] ' if account_id else ''
+        logger.log(level.upper(), f'{prefix}{message}')
         event = EventRecord(level=level, account_id=account_id, message=message)
         self._append(self.events, event, _MAX_EVENTS)
         self._broadcast({'type': 'event', 'event': event.to_public()})

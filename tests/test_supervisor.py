@@ -34,6 +34,26 @@ async def wait_for(predicate, timeout: float = 2.0) -> None:
     raise AssertionError('等待超时')
 
 
+def test_events_without_account_omit_the_bracket_prefix(tmp_dir) -> None:
+    """与账号无关的事件（飞书配置、全局的回复转发）不该在日志里留一个空的 [] 前缀。"""
+    from loguru import logger
+
+    supervisor, _, _ = make_supervisor(tmp_dir)
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(str(message)), level='INFO')
+    try:
+        supervisor.publish_event('info', '', '飞书推送配置已更新')
+        supervisor.publish_event('info', 'acct-1', '主力号 已连接')
+    finally:
+        logger.remove(sink)
+
+    global_line = next(line for line in lines if line.rstrip().endswith('飞书推送配置已更新'))
+    assert '[' not in global_line
+    assert any('[acct-1] 主力号 已连接' in line for line in lines)
+    # 事件流里仍然带着 account_id（空字符串表示全局），界面按它区分
+    assert [event.account_id for event in supervisor.events] == ['', 'acct-1']
+
+
 # ── 退避策略 ──────────────────────────────────────────────────────────────────
 def test_backoff_doubles_while_failing_fast() -> None:
     assert compute_next_backoff(2, alive_for=1, healthy=False) == 4

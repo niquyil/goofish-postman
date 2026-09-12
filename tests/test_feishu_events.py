@@ -67,6 +67,18 @@ def test_parse_ignores_non_text_and_bot_messages() -> None:
     assert parse_incoming_message(FakeEvent(None)) is None
 
 
+def test_describe_event_makes_missing_delivery_obvious() -> None:
+    """日志要能一眼看出「事件来了但没用」和「事件根本没来」的区别。"""
+    from goofishpostman.feishu_events import describe_event
+
+    line = describe_event(FakeEvent(FakeMessage()))
+    assert 'type=text' in line
+    assert '发送者=user' in line
+    assert '引用=om-card-1' in line
+
+    assert '不含消息体' in describe_event(FakeEvent(None))
+
+
 def test_extract_text_handles_broken_content() -> None:
     assert extract_text('{"text":"在的"}') == '在的'
     assert extract_text('not json') == ''

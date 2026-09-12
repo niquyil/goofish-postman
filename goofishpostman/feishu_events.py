@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from asyncio import AbstractEventLoop, get_running_loop, run_coroutine_threadsafe
+from asyncio import AbstractEventLoop, Event, get_running_loop, run_coroutine_threadsafe
 from json import JSONDecodeError, loads
 from re import compile as compile_pattern
 from threading import Thread
@@ -41,6 +41,19 @@ class FeishuReply(NamedTuple):
     message_id: str
 
 
+def describe_event(event) -> str:
+    """把收到的事件压成一行，用来判断「事件到底有没有送到」。"""
+    message = getattr(getattr(event, 'event', None), 'message', None)
+    if message is None:
+        return f'事件不含消息体: {event!r}'[:300]
+    sender = getattr(getattr(event.event, 'sender', None), 'sender_type', '?')
+    quoted = message.parent_id or message.root_id or '无'
+    return (
+        f'type={message.message_type} 发送者={sender} chat={message.chat_id} '
+        f'msg={message.message_id} 引用={quoted} content={message.content!r}'
+    )[:500]
+
+
 def parse_incoming_message(event) -> FeishuReply | None:
     """从「接收消息」事件里取出回复目标与文本。
 
@@ -53,7 +66,6 @@ def parse_incoming_message(event) -> FeishuReply | None:
     if sender_type == 'bot':
         return None  # 别把机器人自己的消息当成用户回复（防回环）
     if (message.message_type or '') != 'text':
-        logger.debug(f'飞书消息不是文本（{message.message_type}），先忽略')
         return None
     text = extract_text(message.content)
     if not text:
@@ -106,7 +118,8 @@ class FeishuReplyListener:
 
         load_sdk()
         handler = EventDispatcherHandler.builder('', '').register_p2_im_message_receive_v1(self._on_event).build()
-        client = ws.Client(self.app_id, self.app_secret, event_handler=handler, log_level=LogLevel.ERROR)
+        # 用 INFO：SDK 会打「connected to …」，出问题时要能从日志看出连接状态
+        client = ws.Client(self.app_id, self.app_secret, event_handler=handler, log_level=LogLevel.INFO)
         try:
             client.start()
         except Exception as e:  # noqa: BLE001 - 监听线程挂掉不能影响主服务
@@ -114,6 +127,8 @@ class FeishuReplyListener:
 
     def _on_event(self, event) -> None:
         """SDK 的事件回调（跑在长连接线程里）：解析后交回主循环。"""
+        # 每条事件都记一笔：这样「事件没送到」和「送到了但没用」能一眼分开
+        logger.info(f'收到飞书事件：{describe_event(event)}')
         incoming = parse_incoming_message(event)
         if incoming is None:
             return
@@ -121,5 +136,41 @@ class FeishuReplyListener:
         if loop is None or loop.is_closed():
             logger.warning('主事件循环不可用，回复丢弃')
             return
-        logger.info(f'收到飞书消息（引用 {incoming.target or "无"}）: {incoming.text!r}')
+        logger.info(f'这是一条可用回复（引用 {incoming.target or "无"}）: {incoming.text!r}')
         run_coroutine_threadsafe(self.on_reply(*incoming), loop)
+
+
+def _debug_listen() -> None:
+    """调试用：起一个长连接，把收到的每条事件原样打出来。
+
+    用法（先停掉服务，避免两个连接抢事件）：
+        uv run python -m goofishpostman.feishu_events
+    然后在飞书里 @ 机器人发一条消息：
+    - 这里能打出来 → 事件订阅没问题，问题在业务逻辑；
+    - 这里什么都没打 → 控制台里「事件订阅」没配好（或改了没发版），
+      或者消息没有 @ 机器人（只申请了 @ 机器人相关的权限时，普通消息不会推送）。
+    """
+    from json import load
+    from os import environ
+    from pathlib import Path
+
+    from .path import DATA_FILE
+
+    path = Path(environ.get('GOOFISH_DATA', DATA_FILE))
+    notify = load(path.open(encoding='utf-8'))['notify']
+    logger.remove()
+    logger.add(lambda message: print(message, end=''), level='DEBUG')
+    print(f'连接受理中（app_id={notify["app_id"]}），收到的每条事件都会打印；Ctrl+C 退出', flush=True)
+    FeishuReplyListener(notify['app_id'], notify['app_secret'], _print_reply).start()
+    try:
+        Event().wait()  # 主线程挂着，长连接在线程里跑
+    except KeyboardInterrupt:
+        print('已退出', flush=True)
+
+
+async def _print_reply(target: str, text: str, message_id: str) -> None:
+    print(f'可转发：引用={target} 文本={text!r} 消息={message_id}', flush=True)
+
+
+if __name__ == '__main__':
+    _debug_listen()

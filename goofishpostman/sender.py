@@ -65,6 +65,10 @@ def format_details(details: dict[str, str]) -> str:
 # 正文里要变成可点链接的地址（http/https）。`fleamarket://` 这类 App 深链不转：
 # 飞书不认这个协议，转成 markdown 链接会变成死链，原样留文本还能复制到手机上打开。
 _URL_PATTERN = compile_pattern(r'https?://[^\s<>()\[\]"\']+')
+# 已经是 markdown 链接/图片的部分：![文字](链接)、[文字](链接)。
+# 必须整段跳过，否则链接化会把 `![图](url)` 拆成 `![图]([url](url))`。
+_MARKDOWN_LINK_PATTERN = compile_pattern(r'!?\[[^\]]*\]\([^)]*\)')
+_TOKEN_PATTERN = compile_pattern(rf'{_MARKDOWN_LINK_PATTERN.pattern}|{_URL_PATTERN.pattern}')
 
 
 def linkify_urls(text: str) -> str:
@@ -72,8 +76,16 @@ def linkify_urls(text: str) -> str:
 
     链接文字就用地址本身，所以渲染出来的样子和纯文本一致，只是多了一层可点性 ——
     网页消息流里同一份文案仍是纯文本，两边不会出现两种说法。
+    已经是 markdown 链接/图片语法的部分原样保留，不重复包裹。
     """
-    return _URL_PATTERN.sub(lambda match: f'[{match.group()}]({match.group()})', text)
+    return _TOKEN_PATTERN.sub(_to_markdown_link, text)
+
+
+def _to_markdown_link(match) -> str:
+    token = match.group()
+    if token.startswith(('[', '![')):  # 已经是链接/图片语法
+        return token
+    return f'[{token}]({token})'
 
 
 def build_card_payload(

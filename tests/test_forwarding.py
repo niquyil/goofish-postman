@@ -17,6 +17,7 @@ from fixtures import (
     IMAGE_URL,
     PUSH_MESSAGE_PAYLOAD,
     SESSION_ID,
+    TIP_CONTENT,
     TRADE_CARD_CONTENT,
     encrypted_record,
     plain_record,
@@ -153,6 +154,18 @@ def test_session_title_cache_is_bounded(tmp_dir) -> None:
     for index in range(_MAX_SESSION_TITLES + 20):
         supervisor._remember_session_title(f'sid-{index}', f'标题{index}')
     assert len(supervisor._session_titles) == _MAX_SESSION_TITLES
+
+
+def test_platform_tip_is_recorded_but_not_pushed(tmp_dir, stub_decrypt) -> None:
+    """平台提示条（contentType=14）不推飞书，但网页消息流要留痕，方便回查。"""
+    supervisor, notifier = make_supervisor(tmp_dir)
+    replay(
+        supervisor,
+        push_frame(encrypted_record(push_payload_with_content(TIP_CONTENT, '想要卖家更快回复？', message_id='tip-1'))),
+    )
+
+    assert notifier.sent == []  # 没往飞书推
+    assert [message.text for message in supervisor.messages] == ['[提示]\n想要卖家更快回复？平台帮你催促，点击“叮一下”']
 
 
 def test_image_message_is_forwarded_with_its_url(tmp_dir, stub_decrypt) -> None:

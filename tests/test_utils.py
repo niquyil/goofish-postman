@@ -355,6 +355,22 @@ def test_unknown_content_falls_back_to_reminder_text() -> None:
     assert text_of({}) == '[不支持的消息类型]'  # 连提醒都没有时才用最后兜底
 
 
+def test_platform_tip_is_marked_silent() -> None:
+    """平台提示条（14）只记录不推送，其余类型照常推。"""
+    from goofishpostman.goofish_utils import extract_message_info as parse
+    from goofishpostman.goofish_utils import is_silent_message
+
+    def payload_of(content: dict) -> dict:
+        return parse(push_frame(encrypted_record(push_payload_with_content(content))))['raw']
+
+    assert is_silent_message(payload_of(TIP_CONTENT)) is True
+    assert is_silent_message(payload_of({'contentType': 1, 'text': {'text': '在吗'}})) is False
+    assert is_silent_message(payload_of(IMAGE_CONTENT)) is False
+    assert is_silent_message(payload_of(PLATFORM_CARD_CONTENT)) is False
+    assert is_silent_message(payload_of({'contentType': 99})) is False  # 认不出的照样推
+    assert is_silent_message({'1': {'2': 'x', '10': {}}}) is False  # 没有正文的帧不能炸
+
+
 def test_image_content_is_read_from_history_shape_too() -> None:
     """同一份正文，推送与历史记录的包装层不同，两边都要能取到。"""
     from goofishpostman.goofish_utils import describe_message_content, extract_message_content, format_content_text

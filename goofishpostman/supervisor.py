@@ -12,7 +12,7 @@ from loguru import logger
 
 from .accounts import FeishuNotifier, NotifyError
 from .goofish_live import GoofishLive, extract_message_text
-from .goofish_utils import extract_message_time, extract_message_uid, format_time
+from .goofish_utils import extract_message_time, extract_message_uid, format_time, is_silent_message
 from .sender import pick_header_color
 from .store import Account, Store
 
@@ -307,6 +307,9 @@ class Supervisor:
             self._append(self.messages, record, _MAX_MESSAGES)
             self._broadcast({'type': 'message', 'message': record.to_public()})
             self._broadcast({'type': 'account', 'account': runtime.to_public()})
+            if is_silent_message(message['raw']):
+                # 平台提示条这类噪音只留在网页消息流里，不推飞书
+                return
             try:
                 await self.notifier.send_account_message(
                     current.label,

@@ -143,3 +143,16 @@ def test_linkify_keeps_surrounding_text() -> None:
         == '看这个 [https://example.com/a.jpg](https://example.com/a.jpg) 挺好'
     )
     assert linkify_urls('没有链接') == '没有链接'
+
+
+def test_linkify_does_not_wrap_markdown_links_again() -> None:
+    """已经是 markdown 链接/图片语法的部分不能再包一层。
+
+    否则 `![图](url)` 会变成 `![图]([url](url))` —— 飞书会拿这个假 image_key 去
+    校验图片并直接拒收整张卡片（实测 ErrCode 200570 invalid image keys）。
+    """
+    image = '![图片](https://example.com/a.jpg)'
+    link = '[查看详情](https://example.com/b)'
+    assert linkify_urls(image) == image
+    assert linkify_urls(link) == link
+    assert linkify_urls(f'{image} 和 {link}') == f'{image} 和 {link}'

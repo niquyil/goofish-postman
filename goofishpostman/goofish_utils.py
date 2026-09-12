@@ -483,6 +483,9 @@ CONTENT_TYPE_LABELS = {
     26: '交易卡片',
 }
 
+# 只记录、不推送到飞书的内容类型（见 is_silent_message）
+SILENT_CONTENT_TYPES = frozenset({14})
+
 _HTML_TAG = compile_pattern(r'<[^>]+>')
 # 卡片文本里的链接：<a size=13 href="fleamarket://..." target="_blank">查看详情</a>
 # href 可能不带引号，也可能只有 data-intent（没有 href，这种就只留文字）
@@ -541,6 +544,18 @@ def describe_message_content(content: dict) -> MessageContent | None:
             return _describe_trade_card(content, kind)
         case _:
             return None
+
+
+def is_silent_message(payload: dict) -> bool:
+    """这条消息是否属于「只记录、不推送」的类型。
+
+    14 是平台提示条（"想要卖家更快回复？平台帮你催促，点击“叮一下”"之类），
+    每个会话都会反复出现（真实历史 248 条里有 43 条），属于噪音，
+    不往飞书推；网页消息流仍然记录，随时能回查。
+    """
+    content = extract_message_content(payload)
+    kind = content.get('contentType') if content else None
+    return isinstance(kind, int) and kind in SILENT_CONTENT_TYPES
 
 
 def format_content_text(content: MessageContent) -> str:

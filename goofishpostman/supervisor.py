@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
 
-from .accounts import FeishuNotifier, NotifyError
+from .accounts import FeishuNotifier, NotifyError, peer_name_from_card
 from .goofish_live import GoofishLive, extract_message_text
 from .goofish_utils import (
     extract_message_images,
@@ -176,6 +176,8 @@ class Supervisor:
         self._seen_messages: dict[str, OrderedDict[str, None]] = {}
         # 会话 → 商品标题（从会话/预热记录里学到，转发时写进卡片明细）
         self._session_titles: dict[str, str] = {}
+        # 会话 → 对方昵称（回复反馈里要写「向 xx 回复」，也兜住升级前的老卡片）
+        self._peer_names: dict[str, str] = {}
         # 账号 → 正在跑的长连接实例（飞书回复要借它发闲鱼消息）
         self._lives: dict[str, GoofishLive] = {}
         self._listeners: list[Callable[[dict], None]] = []
@@ -313,6 +315,7 @@ class Supervisor:
                 text=extract_message_text(message),
                 receiver=current.label,
             )
+            self._remember_peer_name(message['cid'], record.sender)
             runtime.message_count += 1
             runtime.last_message_at = record.at
             self._append(self.messages, record, _MAX_MESSAGES)
@@ -347,9 +350,8 @@ class Supervisor:
     async def forward_feishu_reply(self, feishu_message_id: str, text: str, source_message_id: str = '') -> None:
         """把飞书里对某张卡片的回复，用对应的账号发到对应的闲鱼会话。
 
-        只处理「引用的正是机器人从闲鱼转发过来的那张卡片」的消息：其余情况（没引用、
-        引用的是别人的消息）一律不回飞书，免得群里冒出一堆无效提示 ——
-        这类忽略只记在控制台与网页事件流里。
+        只处理「引用的正是机器人从闲鱼转发过来的那张卡片」的消息：其余情况（未引用、
+        引用的是别的消息）一律不在飞书里回话，只在控制台与网页事件流里留一条记录。
 
         feishu_message_id 是被引用的那张卡片，source_message_id 是用户那条消息
         （反馈就回在它下面）。只有真的处理了才在飞书里反馈成败。
@@ -357,46 +359,89 @@ class Supervisor:
         link = self.store.get_message_link(feishu_message_id) if feishu_message_id else None
         if link is None:
             reason = (
-                '没有引用任何消息'
+                '该消息未引用任何消息，无法确定对应的闲鱼会话'
                 if not feishu_message_id
-                else f'引用的消息 {feishu_message_id} 不是机器人转发的闲鱼卡片'
+                else f'所引用的消息（{feishu_message_id}）不是本服务转发的闲鱼卡片'
             )
-            logger.info(f'忽略飞书回复（{reason}）: {text!r}')
-            self.publish_event('info', '', f'忽略飞书回复（{reason}）: {text}')
+            logger.info(f'未转发飞书消息：{reason}（内容：{text}）')
+            self.publish_event('info', '', f'未转发飞书消息：{reason}（内容：{text}）')
             return
         answer_to = source_message_id or feishu_message_id
         account = self.store.get(link.account_id)
-        label = self._reply_summary(account, link)
+        summary = await self._describe_reply(account, link, feishu_message_id)
         live = self._lives.get(link.account_id)
         if live is None:
-            await self.notifier.reply_message(answer_to, f'{label}失败：账号当前没有在监听')
+            message = f'{summary}失败：该账号当前未处于监听状态'
+            logger.warning(f'{message}（内容：{text}）')
+            self.publish_event('warning', link.account_id, f'{message}（内容：{text}）')
+            await self.notifier.reply_message(answer_to, message)
             return
         try:
             await live.send_text_to_conversation(link.cid, link.toid, text)
         except Exception as e:  # noqa: BLE001 - 任何异常都要告诉用户，而不是静默失败
-            logger.error(f'{label}失败（{type(e).__name__}: {e}）：{text}')
-            self.publish_event('error', link.account_id, f'{label}失败（{type(e).__name__}: {e}）：{text}')
-            await self.notifier.reply_message(answer_to, f'{label}失败：{type(e).__name__}: {e}')
+            message = f'{summary}失败：{type(e).__name__}: {e}'
+            logger.error(f'{message}（内容：{text}）')
+            self.publish_event('error', link.account_id, f'{message}（内容：{text}）')
+            await self.notifier.reply_message(answer_to, message)
             return
-        # 日志里带上回复内容，便于回查；飞书里只给一句结果，不刷屏
-        logger.info(f'{label}：{text}')
-        self.publish_event('info', link.account_id, f'{label}：{text}')
-        await self.notifier.reply_message(answer_to, label)
+        # 飞书里只给一句结果；日志/事件流里再带上回复内容，便于回查
+        logger.info(f'{summary}：{text}')
+        self.publish_event('info', link.account_id, f'{summary}：{text}')
+        await self.notifier.reply_message(answer_to, summary)
 
-    @staticmethod
-    def _reply_summary(account, link) -> str:
+    async def _describe_reply(self, account, link, feishu_message_id: str) -> str:
         """反馈文案：已通过<发送方昵称>（<发送方账号>）向<对方昵称>回复。
 
-        取不到昵称就退回备注名/账号 id，保证这句话总能读通。
+        - 发送方昵称：报文里学到的真实昵称，没有就退回备注名
+        - 发送方账号：Web 端账号卡片上的名字（备注名），没有就退回闲鱼账号 id
+        - 对方昵称：卡片对照表 → 本次运行收到的消息 → 读回卡片标题 → 闲鱼会话历史 → 对方 uid
+          （卡片标题里是完整昵称，但要 im:message:readonly 权限；闲鱼历史不需要额外权限，
+          只是闲鱼对买家的昵称做了打码，形如 x***1）
         """
         nickname = (account.nickname if account else '') or (account.display_name if account else '') or '未知账号'
-        unb = (account.unb if account else '') or (account.id if account else link.account_id)
-        peer = link.peer_name or link.toid
-        return f'已通过{nickname}（{unb}）向{peer}回复'
+        who = (account.name if account else '') or (account.unb if account else '') or ''
+        who = who or (account.id if account else '') or link.account_id
+        peer = link.peer_name or self._peer_names.get(link.cid, '')
+        if not peer and feishu_message_id:
+            # 升级前发出去的老卡片没记对方昵称：先读回卡片标题（完整昵称），再问闲鱼要
+            peer = peer_name_from_card(await self.notifier.get_card_title(feishu_message_id))
+        if not peer:
+            peer = await self._lookup_peer_name(account, link)
+        return f'已通过{nickname}（{who}）向{peer or link.toid}回复'
+
+    async def _lookup_peer_name(self, account, link) -> str:
+        """从闲鱼会话历史里找回对方昵称（老卡片对照表里没记时的兜底）。
+
+        取最近一条「不是本账号发的」消息的发送方昵称；失败返回空串。
+        """
+        live = self._lives.get(link.account_id)
+        if live is None:
+            return ''
+        try:
+            messages = await live.list_all_conversations(link.cid)
+        except Exception as e:  # noqa: BLE001 - 只是取昵称，失败就换别的兜底
+            logger.debug(f'读取会话历史失败，改用其它兜底值：{type(e).__name__}: {e}')
+            return ''
+        for info in messages:
+            name = (info.get('send_user_name') or '').strip()
+            sender_id = info.get('send_user_id') or ''
+            if name and sender_id and (account is None or sender_id != account.unb):
+                self._remember_peer_name(link.cid, name)
+                return name
+        return ''
+
+    def _remember_peer_name(self, cid: str, peer_name: str) -> None:
+        """记住「会话 → 对方昵称」（回复反馈里要写「向 xx 回复」）。"""
+        if not cid or not peer_name:
+            return
+        self._peer_names[cid] = peer_name
+        if len(self._peer_names) > _MAX_SESSION_TITLES:
+            self._peer_names.pop(next(iter(self._peer_names)))
 
     async def note_ignored_feishu_event(self, detail: str) -> None:
         """飞书事件送到了但用不上（机器人自己发的、非文本消息…）：只记事件日志。"""
-        self.publish_event('info', '', f'忽略飞书事件：{detail}')
+        logger.info(f'未处理飞书事件：{detail}')
+        self.publish_event('info', '', f'未处理飞书事件：{detail}')
 
     def _build_message_details(self, message) -> dict[str, str]:
         """卡片明细：只要消息发生时间与商品名（取不到的字段不显示）。"""

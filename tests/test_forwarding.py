@@ -232,14 +232,18 @@ def test_audio_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
 class ReplyLive:
     """假长连接：记录「用这个账号发出去的回复」。"""
 
-    def __init__(self) -> None:
+    def __init__(self, history: list[dict] | None = None) -> None:
         self.sent: list[tuple[str, str, str]] = []
         self.fail_with: Exception | None = None
+        self.history = history or []
 
     async def send_text_to_conversation(self, cid: str, toid: str, text: str) -> None:
         if self.fail_with is not None:
             raise self.fail_with
         self.sent.append((cid, toid, text))
+
+    async def list_all_conversations(self, cid: str) -> list[dict]:
+        return self.history
 
 
 def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) -> None:
@@ -258,7 +262,8 @@ def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) 
 
     run(supervisor.forward_feishu_reply('om-1', '有货的，可以直接拍'))
 
-    summary = '已通过网课学习私人助理（13993122）向一站式学习助手回复'
+    # 发送方：报文里学到的昵称 + Web 端账号卡片上的名字（备注名，不是数字账号）
+    summary = '已通过网课学习私人助理（主力号）向一站式学习助手回复'
     assert live.sent == [(SESSION_ID, '2221114099805', '有货的，可以直接拍')]
     assert notifier.replies == [('om-1', summary)]
     assert any(event.message == f'{summary}：有货的，可以直接拍' for event in supervisor.events)
@@ -270,7 +275,9 @@ def test_reply_to_foreign_message_is_only_logged(tmp_dir, stub_decrypt) -> None:
     run(supervisor.forward_feishu_reply('om-别人的消息', '你们好', 'om-user-1'))
 
     assert notifier.replies == []  # 群里不冒提示
-    assert any('忽略飞书回复' in event.message for event in supervisor.events)
+    logged = [event.message for event in supervisor.events]
+    assert any('未转发飞书消息：所引用的消息（om-别人的消息）不是本服务转发的闲鱼卡片' in line for line in logged)
+    assert any('（内容：你们好）' in line for line in logged)
 
 
 def test_reply_without_quoting_anything_is_only_logged(tmp_dir, stub_decrypt) -> None:
@@ -279,7 +286,7 @@ def test_reply_without_quoting_anything_is_only_logged(tmp_dir, stub_decrypt) ->
     run(supervisor.forward_feishu_reply('', '在吗', 'om-user-1'))
 
     assert notifier.replies == []
-    assert any('没有引用任何消息' in event.message for event in supervisor.events)
+    assert any('未转发飞书消息：该消息未引用任何消息' in event.message for event in supervisor.events)
 
 
 def test_ignored_feishu_event_shows_up_in_the_event_log(tmp_dir, stub_decrypt) -> None:
@@ -287,7 +294,7 @@ def test_ignored_feishu_event_shows_up_in_the_event_log(tmp_dir, stub_decrypt) -
     supervisor, _ = make_supervisor(tmp_dir)
     run(supervisor.note_ignored_feishu_event('type=image 发送者=user chat=oc_1'))
 
-    assert any('忽略飞书事件' in event.message for event in supervisor.events)
+    assert any('未处理飞书事件：type=image' in event.message for event in supervisor.events)
 
 
 def test_reply_while_account_not_running_is_reported(tmp_dir, stub_decrypt) -> None:
@@ -297,7 +304,8 @@ def test_reply_while_account_not_running_is_reported(tmp_dir, stub_decrypt) -> N
     supervisor._lives.clear()
     run(supervisor.forward_feishu_reply('om-1', '在吗'))
 
-    assert '没有在监听' in notifier.replies[0][1]
+    assert '该账号当前未处于监听状态' in notifier.replies[0][1]
+    assert any(event.level == 'warning' for event in supervisor.events)
 
 
 def test_reply_failure_is_reported_to_the_user(tmp_dir, stub_decrypt) -> None:
@@ -311,21 +319,48 @@ def test_reply_failure_is_reported_to_the_user(tmp_dir, stub_decrypt) -> None:
 
     run(supervisor.forward_feishu_reply('om-1', '在吗'))
 
-    assert notifier.replies[0][1].startswith('已通过网课学习私人助理（13993122）向一站式学习助手回复失败')
+    assert notifier.replies[0][1].startswith('已通过网课学习私人助理（主力号）向一站式学习助手回复失败')
     assert '连接已断开' in notifier.replies[0][1]
     assert any(event.level == 'error' and '连接已断开' in event.message for event in supervisor.events)
 
 
-def test_reply_summary_falls_back_when_nickname_or_peer_missing(tmp_dir, stub_decrypt) -> None:
-    """昵称/对方名字取不到时也要能读通（退回备注名、账号 id、对方 uid）。"""
+def test_reply_peer_name_falls_back_to_learned_and_card(tmp_dir, stub_decrypt) -> None:
+    """对方昵称的兜底顺序：对照表 → 本次运行学到的 → 卡片标题 → 闲鱼历史 → 对方 uid。"""
     from goofishpostman.store import MessageLink
 
-    supervisor, _ = make_supervisor(tmp_dir)
+    supervisor, notifier = make_supervisor(tmp_dir)
     account = supervisor.store.list_accounts()[0]
-    link = MessageLink(account_id=account.id, cid='c', toid='2221114099805', peer_name='')
+    link = MessageLink(account_id=account.id, cid='62367910600', toid='2221610863462')
+    supervisor._lives[account.id] = ReplyLive(history=[{'send_user_id': '2221610863462', 'send_user_name': 'x***1'}])
 
-    assert supervisor._reply_summary(account, link) == '已通过网课学习私人助理（13993122）向2221114099805回复'
-    assert supervisor._reply_summary(None, link) == '已通过未知账号（' + account.id + '）向2221114099805回复'
+    async def describe() -> str:
+        return await supervisor._describe_reply(account, link, 'om-card-1')
+
+    # 1) 报文里学到的（现在每张卡发出时都会记，这里模拟"已经学到"）
+    supervisor._remember_peer_name('62367910600', '买家小王')
+    assert run(describe()) == '已通过网课学习私人助理（主力号）向买家小王回复'
+
+    # 2) 读回卡片标题解析（升级前的老卡片 + 有 im:message:readonly 权限时）
+    supervisor._peer_names.clear()
+
+    async def fake_title(message_id: str) -> str:
+        return '买家小李 → 网课学习私人助理(主力号)'
+
+    notifier.get_card_title = fake_title
+    assert run(describe()) == '已通过网课学习私人助理（主力号）向买家小李回复'
+
+    # 3) 卡片读不回来时，问闲鱼要历史（不需要额外权限，昵称会被闲鱼打码）
+    async def no_title(message_id: str) -> str:
+        return ''
+
+    notifier.get_card_title = no_title
+    assert run(describe()) == '已通过网课学习私人助理（主力号）向x***1回复'
+    assert supervisor._peer_names['62367910600'] == 'x***1'  # 学到后缓存下来
+
+    # 4) 全都拿不到时退回对方 uid
+    supervisor._peer_names.clear()
+    supervisor._lives.clear()
+    assert run(describe()) == '已通过网课学习私人助理（主力号）向2221610863462回复'
 
 
 def test_extract_message_uid_extracted_from_real_payload() -> None:

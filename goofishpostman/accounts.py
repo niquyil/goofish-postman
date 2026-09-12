@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from io import BytesIO
+from json import JSONDecodeError, loads
 from shutil import which
 from subprocess import run as run_process
 from tempfile import NamedTemporaryFile
@@ -69,6 +70,7 @@ def load_sdk() -> SimpleNamespace:
         CreateImageRequestBody,
         CreateMessageRequest,
         CreateMessageRequestBody,
+        GetMessageRequest,
         ListChatRequest,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
@@ -83,6 +85,7 @@ def load_sdk() -> SimpleNamespace:
         CreateImageRequestBody=CreateImageRequestBody,
         CreateMessageRequest=CreateMessageRequest,
         CreateMessageRequestBody=CreateMessageRequestBody,
+        GetMessageRequest=GetMessageRequest,
         ListChatRequest=ListChatRequest,
         ReplyMessageRequest=ReplyMessageRequest,
         ReplyMessageRequestBody=ReplyMessageRequestBody,
@@ -97,6 +100,15 @@ def format_direction(account_label: str, info: MessageInfo, sender: str = '') ->
     """消息流向：「发送方 → 接收方」，接收方写成「昵称(账号)」。"""
     who = sender or info.get('send_user_name') or info.get('send_user_id') or '未知用户'
     return f'{who} → {account_label}'
+
+
+def peer_name_from_card(title: str) -> str:
+    """从卡片标题里取回对方昵称（标题形如「发送方 → 接收方」，左边就是对方）。
+
+    只有对照表里没记住对方昵称（例如升级前发出去的老卡片）时才会用到。
+    """
+    head, separator, _ = title.partition(' → ')
+    return head.strip() if separator else ''
 
 
 def build_image_markdown(image_key: str, alt: str = '图片') -> str:
@@ -349,6 +361,35 @@ class FeishuNotifier:
         if not (self.can_send_via_app and message_id):
             return
         await to_thread.run_sync(self._reply_message, message_id, text)
+
+    async def get_card_title(self, message_id: str) -> str:
+        """读回某条消息的卡片标题（兜底取对方昵称）；读不到返回空串。
+
+        需要有 `im:message:readonly` 或 `im:message` 权限，没开就只记一条 debug，
+        由调用方退回其它兜底值。
+        """
+        if not (self.can_send_via_app and message_id):
+            return ''
+        return await to_thread.run_sync(self._get_card_title, message_id)
+
+    def _get_card_title(self, message_id: str) -> str:
+        module = load_sdk()
+        request = module.GetMessageRequest.builder().message_id(message_id).build()
+        response = self._get_client().im.v1.message.get(request)
+        if not response.success():
+            logger.debug(f'读回卡片失败（{describe_response(response)}），改用其它兜底值')
+            return ''
+        items = (response.data.items if response.data else None) or []
+        for item in items:
+            content = getattr(getattr(item, 'body', None), 'content', '') or ''
+            try:
+                parsed = loads(content)
+            except JSONDecodeError:
+                continue
+            title = ((parsed.get('header') or {}).get('title') or {}).get('content')
+            if isinstance(title, str) and title:
+                return title
+        return ''
 
     def _reply_message(self, message_id: str, text: str) -> None:
         module = load_sdk()

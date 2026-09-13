@@ -173,7 +173,7 @@ def _debug_listen() -> None:
     logger.remove()
     logger.add(lambda message: print(message, end=''), level='DEBUG')
     print(f'连接受理中（app_id={notify["app_id"]}），收到的每条事件都会打印；Ctrl+C 退出', flush=True)
-    FeishuReplyListener(notify['app_id'], notify['app_secret'], _print_reply).start()
+    FeishuReplyListener(app_id=notify['app_id'], app_secret=notify['app_secret'], on_reply=_print_reply).start()
     try:
         Event().wait()  # 主线程挂着，长连接在线程里跑
     except KeyboardInterrupt:

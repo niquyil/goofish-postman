@@ -413,6 +413,18 @@ uv run ruff check . && uv run ruff format --check .
 > 启动日志会打印 `构建版本`，改完前端/接口后递增 `goofishpostman/path.py`
 > 里的 `BUILD_STAMP`，就能在日志里确认跑的是哪一版。
 
+### 代码约定
+
+- **调用**：实参超过 2 个（位置实参 ≥3 个）时就全部写成关键字实参，读调用处不必回去翻定义；
+  只传 1 个实参时直接用位置实参，不必写 `name=`。两个实参维持原样（默认位置传入）。
+  例：`publish_event(level='info', account_id=account.id, message=...)`、`lru_cache(1)`、`Queue(500)`。
+  例外是不适用的地方：位置专用形参（`getattr` / `setattr` / `range` / `datetime` 的 C 实现）、
+  只能收关键字的结构（pydantic 模型、`Field(default_factory=...)`、`**kwargs` 收集参数）、
+  以及 `*args` 透传（`to_thread.run_sync`、`contextlib.suppress`）——它们保持原样。
+- **命名**：可调用对象用「动词 / 动词+宾语」，`@property` 用名词。
+- **提交信息**：Conventional Commits（`feat:` / `fix:` / `refactor:` …），正文用中文写清
+  「为什么改」以及实测/测试结果。
+
 ---
 
 ## 额外说明

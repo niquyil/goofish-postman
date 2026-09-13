@@ -240,9 +240,9 @@ class WebApp:
     async def render_index(self, request: Request) -> Response:
         self.supervisor.sync_runtimes()
         return TEMPLATES.TemplateResponse(
-            request,
-            'index.html',
-            {
+            request=request,
+            name='index.html',
+            context={
                 # 供 <template> 使用的空占位（JS 克隆后自行填内容）
                 'empty_item': {'at_text': '', 'level': 'info', 'sender': '', 'receiver': '', 'text': '', 'message': ''},
                 'accounts': [runtime.to_template() for runtime in self.supervisor.runtimes.values()],
@@ -253,7 +253,7 @@ class WebApp:
         )
 
     async def render_login_page(self, request: Request) -> Response:
-        return TEMPLATES.TemplateResponse(request, 'login.html', {})
+        return TEMPLATES.TemplateResponse(request=request, name='login.html', context={})
 
     async def api_login(self, body: LoginBody) -> Response:
         if not self.required_token:
@@ -272,7 +272,7 @@ class WebApp:
         return ChineseJSONResponse({'ok': True, **self.supervisor.build_snapshot()})
 
     async def api_get_events(self, request: Request) -> StreamingResponse:
-        queue: Queue[dict] = Queue(maxsize=500)
+        queue: Queue[dict] = Queue(500)
         unsubscribe = self.supervisor.subscribe(queue.put_nowait)
 
         async def stream_events() -> AsyncIterator[bytes]:
@@ -301,7 +301,7 @@ class WebApp:
             return self._bad_request('cookie 不能为空')
         account = self.store.add(name=body.name.strip(), cookie=cookie, enabled=body.enabled)
         await self.supervisor.apply_enabled(account)
-        self.supervisor.publish_event('info', account.id, f'新增账号 {account.display_name}')
+        self.supervisor.publish_event(level='info', account_id=account.id, message=f'新增账号 {account.display_name}')
         return ChineseJSONResponse({'ok': True, 'account': account.to_public()}, status_code=201)
 
     async def api_update_account(self, account_id: str, body: AccountPatch) -> Response:
@@ -335,7 +335,7 @@ class WebApp:
         await self.supervisor.stop(account_id)
         self.store.remove(account_id)
         self.supervisor.runtimes.pop(account_id, None)
-        self.supervisor.publish_event('info', account_id, '账号已删除')
+        self.supervisor.publish_event(level='info', account_id=account_id, message='账号已删除')
         return ChineseJSONResponse({'ok': True})
 
     async def api_restart_account(self, account_id: str) -> Response:
@@ -350,7 +350,9 @@ class WebApp:
         if account is None:
             return self._not_found('账号不存在')
         updated = self.store.clear_nickname(account_id) or account
-        self.supervisor.publish_event('info', account_id, f'{updated.display_name} 昵称缓存已清空，将重新学习')
+        self.supervisor.publish_event(
+            level='info', account_id=account_id, message=f'{updated.display_name} 昵称缓存已清空，将重新学习'
+        )
         return ChineseJSONResponse({'ok': True, 'account': updated.to_public()})
 
     # ── 飞书配置 ──────────────────────────────────────────────────────────────
@@ -382,7 +384,9 @@ class WebApp:
             app_id=notify.app_id, app_secret=notify.app_secret, chat_id=notify.chat_id
         )
         self.supervisor.publish_event(
-            'info', '', '飞书推送配置已更新' if notify.configured else '飞书推送配置已更新（还不完整，补齐后才会发送）'
+            level='info',
+            account_id='',
+            message='飞书推送配置已更新' if notify.configured else '飞书推送配置已更新（还不完整，补齐后才会发送）',
         )
         return ChineseJSONResponse({'ok': True, **notify.to_public()})
 
@@ -462,7 +466,9 @@ class WebApp:
         account = self.store.add(name=info.get('tracknick') or info['unb'], cookie=info['cookie'], enabled=True)
         qr_state.account_id = account.id
         await self.supervisor.apply_enabled(account)
-        self.supervisor.publish_event('info', account.id, f'扫码登录成功：{account.display_name}')
+        self.supervisor.publish_event(
+            level='info', account_id=account.id, message=f'扫码登录成功：{account.display_name}'
+        )
         logger.info(f'扫码登录成功：{account.display_name}')
         return account
 

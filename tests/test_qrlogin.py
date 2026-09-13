@@ -79,17 +79,17 @@ def qr(tmp_dir) -> QrHarness:
     stub = StubQr()
     client = TestClient(create_app(store, supervisor))
     with (
-        patch.object(web_module, 'create_login_session', stub.create_login_session),
-        patch.object(web_module, 'start_qr_login', stub.start_qr_login),
-        patch.object(web_module, 'poll_qr_login', stub.poll_qr_login),
-        patch.object(web_module, 'finish_qr_login', stub.finish_qr_login),
+        patch.object(target=web_module, attribute='create_login_session', new=stub.create_login_session),
+        patch.object(target=web_module, attribute='start_qr_login', new=stub.start_qr_login),
+        patch.object(target=web_module, attribute='poll_qr_login', new=stub.poll_qr_login),
+        patch.object(target=web_module, attribute='finish_qr_login', new=stub.finish_qr_login),
     ):
-        yield QrHarness(client, store, supervisor, stub)
+        yield QrHarness(client=client, store=store, supervisor=supervisor, stub=stub)
 
 
 # ── 会话管理 ──────────────────────────────────────────────────────────────────
 def test_manager_purges_expired_sessions() -> None:
-    manager = QrLoginManager(ttl=0.05)
+    manager = QrLoginManager(0.05)
     session_id = manager.create(make_state())
     assert manager.get(session_id) is not None  # 未过期时可用
 
@@ -99,14 +99,14 @@ def test_manager_purges_expired_sessions() -> None:
 
 
 def test_manager_keeps_fresh_sessions() -> None:
-    manager = QrLoginManager(ttl=999)
+    manager = QrLoginManager(999)
     session_id = manager.create(make_state())
     for _ in range(3):
         assert manager.get(session_id) is not None
 
 
 def test_manager_drops_after_max_polls() -> None:
-    manager = QrLoginManager(ttl=999)
+    manager = QrLoginManager(999)
     session_id = manager.create(make_state())
     for _ in range(QR_SESSION_MAX_POLLS + 1):
         manager.get(session_id)
@@ -140,7 +140,7 @@ def test_qr_start_reports_upstream_failure(qr: QrHarness) -> None:
     def boom():
         raise QrLoginError('获取二维码失败: 连接超时')
 
-    with patch.object(web_module, 'create_login_session', boom):
+    with patch.object(target=web_module, attribute='create_login_session', new=boom):
         response = qr.client.post('/api/qr/start')
     assert response.status_code == 502
     assert '连接超时' in response.json()['error']
@@ -201,7 +201,7 @@ def test_qr_poll_reports_login_failure(qr: QrHarness) -> None:
     def boom(_state):
         raise QrLoginError('登录未完成，请重新扫码')
 
-    with patch.object(web_module, 'finish_qr_login', boom):
+    with patch.object(target=web_module, attribute='finish_qr_login', new=boom):
         session_id = qr.client.post('/api/qr/start').json()['session_id']
         qr.client.get(f'/api/qr/{session_id}')  # 推进到 SCANNED
         response = qr.client.get(f'/api/qr/{session_id}')  # 触发完成登录并失败
@@ -263,8 +263,8 @@ def test_create_login_session_works_without_user_id(monkeypatch) -> None:
     from goofishpostman import goofish_apis
 
     session = FakeUpstreamSession()
-    monkeypatch.setattr(goofish_apis, 'Session', lambda: session)
-    monkeypatch.setattr(goofish_apis, 'generate_tfstk', lambda timeout=15: '')
+    monkeypatch.setattr(target=goofish_apis, name='Session', value=lambda: session)
+    monkeypatch.setattr(target=goofish_apis, name='generate_tfstk', value=lambda timeout=15: '')
 
     state = goofish_apis.create_login_session()
 
@@ -296,7 +296,7 @@ def test_qr_start_unexpected_error_returns_502(qr: QrHarness) -> None:
     def boom():
         raise TypeError('模拟未知错误')
 
-    with patch.object(web_module, 'create_login_session', boom):
+    with patch.object(target=web_module, attribute='create_login_session', new=boom):
         response = qr.client.post('/api/qr/start')
 
     assert response.status_code == 502
@@ -309,7 +309,7 @@ def test_qr_status_unexpected_error_returns_502(qr: QrHarness) -> None:
     def boom(_state):
         raise ValueError('模拟轮询异常')
 
-    with patch.object(web_module, 'poll_qr_login', boom):
+    with patch.object(target=web_module, attribute='poll_qr_login', new=boom):
         session_id = qr.client.post('/api/qr/start').json()['session_id']
         response = qr.client.get(f'/api/qr/{session_id}')
 
@@ -319,7 +319,9 @@ def test_qr_status_unexpected_error_returns_502(qr: QrHarness) -> None:
 
 def test_qr_png_render_failure_returns_502(qr: QrHarness) -> None:
     """二维码渲染失败（例如 qrcode 版本问题）也要给出可读错误。"""
-    with patch.object(web_module, 'render_qr_png', lambda url: (_ for _ in ()).throw(ValueError('bad qr url'))):
+    with patch.object(
+        target=web_module, attribute='render_qr_png', new=lambda url: (_ for _ in ()).throw(ValueError('bad qr url'))
+    ):
         response = qr.client.post('/api/qr/start')
 
     assert response.status_code == 502

@@ -301,7 +301,7 @@ class Goofish:
 
     @staticmethod
     def sign(timestamp: str, token: str, data: str) -> str:
-        return generate_sign(timestamp, token, data)
+        return generate_sign(timestamp=timestamp, token=token, data=data)
 
     @property
     def cookies(self) -> Cookies:
@@ -316,7 +316,9 @@ class Goofish:
         if not isinstance(data, str):
             data = dumps(data, separators=(',', ':'))
         timestamp = str(int(time() * 1000))
-        params = spec.build_params(data=data, timestamp=timestamp, sign=self.sign(timestamp, self.mtop_token, data))
+        params = spec.build_params(
+            data=data, timestamp=timestamp, sign=self.sign(timestamp=timestamp, token=self.mtop_token, data=data)
+        )
         response = self.session.post(
             url=spec.url, data={'data': data}, headers=spec.build_headers(), params=params, timeout=20
         )

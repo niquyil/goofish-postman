@@ -187,7 +187,7 @@ class Supervisor:
     def sync_runtimes(self) -> None:
         """让运行态跟着配置走：新增的登记进来，删掉的清理掉。"""
         for account in self.store.list_accounts():
-            self.runtimes.setdefault(account.id, AccountRuntime(account=account))
+            self.runtimes.setdefault(account.id, AccountRuntime(account))
         known = {a.id for a in self.store.list_accounts()}
         for account_id in list(self.runtimes):
             if account_id not in known:
@@ -206,7 +206,7 @@ class Supervisor:
         self.sync_runtimes()
         runtime = self.runtimes.get(account.id)
         if runtime is None:
-            runtime = self.runtimes[account.id] = AccountRuntime(account=account)
+            runtime = self.runtimes[account.id] = AccountRuntime(account)
         if runtime.task is not None and not runtime.task.done():
             return
         runtime.account = account
@@ -226,7 +226,7 @@ class Supervisor:
         except CancelledError:
             pass
         self._set_status(runtime, 'stopped')
-        self.publish_event('info', account_id, f'{runtime.account.display_name} 已停止监听')
+        self.publish_event(level='info', account_id=account_id, message=f'{runtime.account.display_name} 已停止监听')
 
     async def stop_all(self) -> None:
         for account_id in list(self.runtimes):
@@ -261,7 +261,9 @@ class Supervisor:
                 _runtime.retry_count = 0
                 if _runtime.started_at is None:
                     _runtime.started_at = datetime.now(UTC)
-                self.publish_event('info', account.id, f'{account.display_name} 已连接，开始监听')
+                self.publish_event(
+                    level='info', account_id=account.id, message=f'{account.display_name} 已连接，开始监听'
+                )
                 self._broadcast({'type': 'account', 'account': _runtime.to_public()})
 
             def mark_healthy() -> None:
@@ -273,7 +275,7 @@ class Supervisor:
             live.on_connected = publish_connected
             # 会话/预热记录里带商品标题，先记下来，转发消息时写进卡片明细
             live.on_session_info = self._remember_session_title
-            live.handle_message = self._make_handler(account, runtime, mark_healthy)
+            live.handle_message = self._make_handler(account=account, runtime=runtime, on_message=mark_healthy)
             # 记住实例：飞书里回复卡片时要用它的长连接把消息发到闲鱼
             self._lives[account.id] = live
             try:
@@ -291,7 +293,11 @@ class Supervisor:
             runtime.retry_count += 1
             runtime.status = 'error'
             runtime.error = reason
-            self.publish_event('warning', account.id, f'{account.display_name} {reason}，{backoff:.0f}s 后重试')
+            self.publish_event(
+                level='warning',
+                account_id=account.id,
+                message=f'{account.display_name} {reason}，{backoff:.0f}s 后重试',
+            )
             self._broadcast({'type': 'account', 'account': runtime.to_public()})
             await sleep(backoff)
 
@@ -302,7 +308,9 @@ class Supervisor:
             # 然后重新从 store 读一次账号，让展示用上刚学到的昵称
             self._learn_nickname(message)
             current = self.store.get(account.id) or account
-            if self.is_self_sent(current, message['send_user_id'], message['send_user_name']):
+            if self.is_self_sent(
+                account=current, sender_id=message['send_user_id'], sender_name=message['send_user_name']
+            ):
                 # 这条是当前监听的账号自己发出去的：账号互发时双方的连接都会收到它，
                 # 发送方那一侧不该当成"收到消息"推给飞书
                 return
@@ -321,7 +329,7 @@ class Supervisor:
             self._remember_peer_name(message['cid'], record.sender)
             runtime.message_count += 1
             runtime.last_message_at = record.at
-            self._append(self.messages, record, _MAX_MESSAGES)
+            self._append(buffer=self.messages, item=record, limit=_MAX_MESSAGES)
             self._broadcast({'type': 'message', 'message': record.to_public()})
             self._broadcast({'type': 'account', 'account': runtime.to_public()})
             if is_silent_message(message['raw']):
@@ -329,9 +337,9 @@ class Supervisor:
                 return
             try:
                 message_id = await self.notifier.send_account_message(
-                    current.label,
-                    message,
-                    record.text,
+                    account_label=current.label,
+                    info=message,
+                    text=record.text,
                     sender=record.sender,
                     details=self._build_message_details(message),
                     color=pick_header_color(current.id),
@@ -339,12 +347,16 @@ class Supervisor:
                     media=extract_message_media(message['raw']),
                 )
             except NotifyError as e:
-                self.publish_event('error', current.id, str(e))
+                self.publish_event(level='error', account_id=current.id, message=str(e))
                 return
             # 记下「这条飞书消息 → 这个闲鱼会话」：在飞书里回复它就能发到闲鱼
             if message_id:
                 self.store.remember_message_link(
-                    message_id, current.id, message['cid'], message['send_user_id'], record.sender
+                    message_id=message_id,
+                    account_id=current.id,
+                    cid=message['cid'],
+                    toid=message['send_user_id'],
+                    peer_name=record.sender,
                 )
 
         return handle_message
@@ -367,29 +379,29 @@ class Supervisor:
                 else f'所引用的消息（{feishu_message_id}）不是本服务转发的闲鱼卡片'
             )
             logger.info(f'未转发飞书消息：{reason}（内容：{text}）')
-            self.publish_event('info', '', f'未转发飞书消息：{reason}（内容：{text}）')
+            self.publish_event(level='info', account_id='', message=f'未转发飞书消息：{reason}（内容：{text}）')
             return
         answer_to = source_message_id or feishu_message_id
         account = self.store.get(link.account_id)
-        summary = await self._describe_reply(account, link, feishu_message_id)
+        summary = await self._describe_reply(account=account, link=link, feishu_message_id=feishu_message_id)
         live = self._lives.get(link.account_id)
         if live is None:
             message = f'{summary}失败：该账号当前未处于监听状态'
             logger.warning(f'{message}（内容：{text}）')
-            self.publish_event('warning', link.account_id, f'{message}（内容：{text}）')
+            self.publish_event(level='warning', account_id=link.account_id, message=f'{message}（内容：{text}）')
             await self.notifier.reply_message(answer_to, message)
             return
         try:
-            await live.send_text_to_conversation(link.cid, link.toid, text)
+            await live.send_text_to_conversation(cid=link.cid, toid=link.toid, text=text)
         except Exception as e:  # noqa: BLE001 - 任何异常都要告诉用户，而不是静默失败
             message = f'{summary}失败：{type(e).__name__}: {e}'
             logger.error(f'{message}（内容：{text}）')
-            self.publish_event('error', link.account_id, f'{message}（内容：{text}）')
+            self.publish_event(level='error', account_id=link.account_id, message=f'{message}（内容：{text}）')
             await self.notifier.reply_message(answer_to, message)
             return
         # 飞书里只给一句结果；日志/事件流里再带上回复内容，便于回查
         logger.info(f'{summary}：{text}')
-        self.publish_event('info', link.account_id, f'{summary}：{text}')
+        self.publish_event(level='info', account_id=link.account_id, message=f'{summary}：{text}')
         await self.notifier.reply_message(answer_to, summary)
 
     async def _describe_reply(self, account, link, feishu_message_id: str) -> str:
@@ -420,7 +432,7 @@ class Supervisor:
     async def note_ignored_feishu_event(self, detail: str) -> None:
         """飞书事件送到了但用不上（机器人自己发的、非文本消息…）：只记事件日志。"""
         logger.info(f'未处理飞书事件：{detail}')
-        self.publish_event('info', '', f'未处理飞书事件：{detail}')
+        self.publish_event(level='info', account_id='', message=f'未处理飞书事件：{detail}')
 
     def _build_message_details(self, message) -> dict[str, str]:
         """卡片明细：只要消息发生时间与商品名（取不到的字段不显示）。"""
@@ -483,7 +495,9 @@ class Supervisor:
         if updated is None:
             return
         logger.info(f'{updated.display_name} 昵称更新为 {sender_name}')
-        self.publish_event('info', updated.id, f'{updated.display_name} 昵称更新为 {sender_name}')
+        self.publish_event(
+            level='info', account_id=updated.id, message=f'{updated.display_name} 昵称更新为 {sender_name}'
+        )
 
     @staticmethod
     def is_self_sent(account: Account, sender_id: str, sender_name: str) -> bool:
@@ -508,14 +522,16 @@ class Supervisor:
             return True
         seen[uid] = None
         while len(seen) > _MAX_SEEN_MESSAGES:
-            seen.popitem(last=False)
+            seen.popitem(False)  # last=False：先进先出，淘汰最早见过的
         return False
 
     def _fail(self, runtime: AccountRuntime, message: str) -> None:
         runtime.status = 'error'
         runtime.error = message
         runtime.task = None
-        self.publish_event('error', runtime.account.id, f'{runtime.account.display_name} {message}')
+        self.publish_event(
+            level='error', account_id=runtime.account.id, message=f'{runtime.account.display_name} {message}'
+        )
         self._broadcast({'type': 'account', 'account': runtime.to_public()})
 
     def _set_status(self, runtime: AccountRuntime, status: AccountStatus) -> None:
@@ -554,7 +570,7 @@ class Supervisor:
         prefix = f'[{account_id}] ' if account_id else ''
         logger.log(level.upper(), f'{prefix}{message}')
         event = EventRecord(level=level, account_id=account_id, message=message)
-        self._append(self.events, event, _MAX_EVENTS)
+        self._append(buffer=self.events, item=event, limit=_MAX_EVENTS)
         self._broadcast({'type': 'event', 'event': event.to_public()})
 
     def subscribe(self, listener: Callable[[dict], None]) -> Callable[[], None]:

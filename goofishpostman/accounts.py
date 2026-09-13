@@ -54,7 +54,7 @@ _MEDIA_FILENAMES = {'video': 'message.mp4', 'audio': 'message.opus'}
 _AUDIO_FFMPEG_ARGS = ('-acodec', 'libopus', '-ac', '1', '-ar', '16000', '-f', 'ogg')
 
 
-@lru_cache(maxsize=1)
+@lru_cache(1)
 def load_sdk() -> SimpleNamespace:
     """惰性加载飞书官方 SDK，返回用到的那些类。
 
@@ -213,7 +213,8 @@ class FeishuNotifier:
             body = self._strip_inlined_media(body, media, keep_label=uploaded['kind'] == 'audio')
         video = uploaded if uploaded and uploaded['kind'] == 'video' else None
         message_id = await self._send_message(
-            'interactive', content_json(build_card(title, body, details, color, video))
+            'interactive',
+            content_json(build_card(title=title, content=body, details=details, color=color, video=video)),
         )
         if uploaded and uploaded['kind'] == 'audio':
             payload = {'file_key': uploaded['file_key']}
@@ -513,4 +514,11 @@ class FeishuNotifier:
 
         account_label 为接收账号的「昵称(账号)」，sender 为发送方昵称。
         """
-        return await self.send_card(format_direction(account_label, info, sender), text, details, color, images, media)
+        return await self.send_card(
+            title=format_direction(account_label=account_label, info=info, sender=sender),
+            content=text,
+            details=details,
+            color=color,
+            images=images,
+            media=media,
+        )

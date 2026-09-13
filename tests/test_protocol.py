@@ -54,7 +54,7 @@ def test_sign_format() -> None:
 
     data = '{"itemId":"1"}'
     expected = md5(f'TOKEN&1700000000000&{MTOP_APP_KEY}&{data}'.encode()).hexdigest()
-    assert Goofish.sign('1700000000000', 'TOKEN', data) == expected
+    assert Goofish.sign(timestamp='1700000000000', token='TOKEN', data=data) == expected
 
 
 def test_get_token_body_uses_channel_app_key() -> None:

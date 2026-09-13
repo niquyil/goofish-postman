@@ -538,11 +538,11 @@ def describe_message_content(content: dict) -> MessageContent | None:
             text = _strip_html(_as_text((content.get('text') or {}).get('text')))
             return MessageContent(label='', lines=[text] if text else [], links=[])
         case 2:
-            return _describe_media(kind, content.get('image') or {}, _image_links)
+            return _describe_media(kind=kind, media=content.get('image') or {}, links_of=_image_links)
         case 3:
-            return _describe_media(kind, content.get('audio') or {}, _audio_links)
+            return _describe_media(kind=kind, media=content.get('audio') or {}, links_of=_audio_links)
         case 4:
-            return _describe_media(kind, content.get('video') or {}, _video_links)
+            return _describe_media(kind=kind, media=content.get('video') or {}, links_of=_video_links)
         case 6:
             card = content.get('textCard') or {}
             lines = [_strip_html(_as_text(card.get('title'))), _strip_html(_as_text(card.get('content')))]
@@ -616,10 +616,10 @@ def extract_mp4_duration_ms(data: bytes) -> int:
     所以时长只能自己从文件里读：MP4 是一层层 box（`[长度4][类型4][内容]`），
     顶层找 `moov`、里面找 `mvhd`，拿 timescale 与 duration 算一下即可，不需要额外依赖。
     """
-    moov = _find_box(data, 0, len(data), b'moov')
+    moov = _find_box(data=data, start=0, end=len(data), wanted=b'moov')
     if moov is None:
         return 0
-    mvhd = _find_box(data, moov[0], moov[1], b'mvhd')
+    mvhd = _find_box(data=data, start=moov[0], end=moov[1], wanted=b'mvhd')
     if mvhd is None:
         return 0
     start, end = mvhd

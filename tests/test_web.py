@@ -31,7 +31,7 @@ def build_harness(tmp_dir, token: str = '') -> Harness:
     supervisor = Supervisor(store, RecordingNotifier())
     supervisor.live_factory = FakeLive
     client = TestClient(create_app(store, supervisor))
-    return Harness(client, store, supervisor)
+    return Harness(client=client, store=store, supervisor=supervisor)
 
 
 # ── 基本页面与状态 ────────────────────────────────────────────────────────────
@@ -220,7 +220,7 @@ def test_notify_chat_list_is_cached(tmp_dir, monkeypatch: MonkeyPatch) -> None:
         calls.append(self.app_id)
         return [{'chat_id': 'oc_1', 'name': '闲鱼消息汇总'}, {'chat_id': 'oc_2', 'name': ''}]
 
-    monkeypatch.setattr(FeishuNotifier, 'list_chats', fake_list_chats)
+    monkeypatch.setattr(target=FeishuNotifier, name='list_chats', value=fake_list_chats)
     body = harness.client.get('/api/notify/chats').json()
     assert [chat['chat_id'] for chat in body['chats']] == ['oc_1', 'oc_2']
     # 群名列不出来（机器人不在群里/接口没给名字）时，不要显示成「oc_2（oc_2）」
@@ -289,11 +289,11 @@ def test_index_renders_everything_server_side(tmp_dir) -> None:
     runtime.message_count = 3
     runtime.retry_count = 1
     harness.supervisor._append(
-        harness.supervisor.messages,
-        MessageRecord(account_id=account.id, account_name='主力号', send_user_name='买家', text='在吗'),
-        _MAX_MESSAGES,
+        buffer=harness.supervisor.messages,
+        item=MessageRecord(account_id=account.id, account_name='主力号', send_user_name='买家', text='在吗'),
+        limit=_MAX_MESSAGES,
     )
-    harness.supervisor.publish_event('info', account.id, '扫码登录成功')
+    harness.supervisor.publish_event(level='info', account_id=account.id, message='扫码登录成功')
 
     html = harness.client.get('/').text
 

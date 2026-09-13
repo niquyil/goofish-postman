@@ -48,9 +48,9 @@ async def run_web(store: Store, host: str = '', port: int = 0, browser: bool = T
         create_task(warm_up_feishu_sdk())
         # 飞书里回复卡片 → 闲鱼私信（长连接收事件，不需要公网地址）
         FeishuReplyListener(
-            notify.app_id,
-            notify.app_secret,
-            supervisor.forward_feishu_reply,
+            app_id=notify.app_id,
+            app_secret=notify.app_secret,
+            on_reply=supervisor.forward_feishu_reply,
             on_ignored=supervisor.note_ignored_feishu_event,
         ).start()
     await supervisor.start_enabled()

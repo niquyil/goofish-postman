@@ -107,13 +107,13 @@ def test_device_id_variant_bit() -> None:
 )
 def test_sign_matches_manual_md5(timestamp: str, token: str, data: str) -> None:
     expected = md5(f'{token}&{timestamp}&{MTOP_APP_KEY}&{data}'.encode()).hexdigest()
-    assert generate_sign(timestamp, token, data) == expected
+    assert generate_sign(timestamp=timestamp, token=token, data=data) == expected
 
 
 def test_goofish_sign_delegates_to_generate_sign() -> None:
     from goofishpostman.goofish_apis import Goofish
 
-    assert Goofish.sign('1', 'tok', '{}') == generate_sign('1', 'tok', '{}')
+    assert Goofish.sign(timestamp='1', token='tok', data='{}') == generate_sign(timestamp='1', token='tok', data='{}')
 
 
 # ── MessagePack 解码（原 decrypt） ───────────────────────────────────────────
@@ -192,7 +192,7 @@ def test_decrypt_data_raises_on_garbage() -> None:
 
 def load_real_samples() -> list[str]:
     path = Path(__file__).resolve().parent / 'data' / 'real_messagepack_samples.txt'
-    return [line.strip() for line in path.read_text(encoding='utf-8').splitlines() if line.strip() and line[0] != '#']
+    return [line.strip() for line in path.read_text('utf-8').splitlines() if line.strip() and line[0] != '#']
 
 
 def test_real_messagepack_samples_still_decode() -> None:

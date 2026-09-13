@@ -42,8 +42,8 @@ def test_events_without_account_omit_the_bracket_prefix(tmp_dir) -> None:
     lines: list[str] = []
     sink = logger.add(lambda message: lines.append(str(message)), level='INFO')
     try:
-        supervisor.publish_event('info', '', '飞书推送配置已更新')
-        supervisor.publish_event('info', 'acct-1', '主力号 已连接')
+        supervisor.publish_event(level='info', account_id='', message='飞书推送配置已更新')
+        supervisor.publish_event(level='info', account_id='acct-1', message='主力号 已连接')
     finally:
         logger.remove(sink)
 
@@ -69,14 +69,16 @@ def test_backoff_resets_when_connection_was_healthy() -> None:
 # ── 时间展示 ──────────────────────────────────────────────────────────────────
 def test_format_time_shows_local_time_for_utc_values() -> None:
     """时间统一按 UTC 存，界面上要换成本机时区，否则会差几个钟头。"""
-    moment = datetime(2026, 9, 12, 4, 30, tzinfo=UTC)
+    moment = datetime(year=2026, month=9, day=12, hour=4, minute=30, tzinfo=UTC)
     assert format_time(moment) == moment.astimezone().strftime('%m-%d %H:%M:%S')
 
 
 def test_format_time_keeps_legacy_naive_values() -> None:
     """老配置文件里是不带时区的本地时间：原样显示，不做二次换算。"""
     assert format_time('2026-09-12T15:30:00') == '09-12 15:30:00'
-    assert format_time('2026-09-12T15:30:00+00:00') == format_time(datetime(2026, 9, 12, 15, 30, tzinfo=UTC))
+    assert format_time('2026-09-12T15:30:00+00:00') == format_time(
+        datetime(year=2026, month=9, day=12, hour=15, minute=30, tzinfo=UTC)
+    )
     assert format_time(None) == ''
     assert format_time('不是时间') == '不是时间'
 
@@ -242,12 +244,12 @@ def test_subscribers_receive_broadcasts(tmp_dir) -> None:
         received: list[dict] = []
         unsubscribe = supervisor.subscribe(received.append)
 
-        supervisor.publish_event('info', 'acc-1', '测试事件')
+        supervisor.publish_event(level='info', account_id='acc-1', message='测试事件')
         assert received[-1]['type'] == 'event'
         assert received[-1]['event']['message'] == '测试事件'
 
         unsubscribe()
-        supervisor.publish_event('info', 'acc-1', '不会再收到')
+        supervisor.publish_event(level='info', account_id='acc-1', message='不会再收到')
         assert len(received) == 1
 
     run(run_scenario())
@@ -263,7 +265,7 @@ def test_broken_subscriber_does_not_break_others(tmp_dir) -> None:
 
         supervisor.subscribe(boom)
         supervisor.subscribe(received.append)
-        supervisor.publish_event('info', 'acc-1', 'ok')
+        supervisor.publish_event(level='info', account_id='acc-1', message='ok')
         assert len(received) == 1
 
     run(run_scenario())
@@ -330,9 +332,9 @@ def test_message_buffer_is_capped(tmp_dir) -> None:
         supervisor, _, _ = make_supervisor(tmp_dir)
         for index in range(_MAX_MESSAGES + 25):
             supervisor._append(
-                supervisor.messages,
-                MessageRecord(account_id='a', account_name='n', send_user_name='s', text=str(index)),
-                _MAX_MESSAGES,
+                buffer=supervisor.messages,
+                item=MessageRecord(account_id='a', account_name='n', send_user_name='s', text=str(index)),
+                limit=_MAX_MESSAGES,
             )
         assert len(supervisor.messages) == _MAX_MESSAGES
         assert supervisor.messages[-1].text == str(_MAX_MESSAGES + 24)

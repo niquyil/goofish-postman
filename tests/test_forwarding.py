@@ -62,7 +62,7 @@ def replay(supervisor: Supervisor, frame: dict) -> None:
         await supervisor.start_enabled()
         account = supervisor.store.list_accounts()[0]
         runtime = supervisor.runtimes[account.id]
-        handler = supervisor._make_handler(account, runtime, lambda: None)
+        handler = supervisor._make_handler(account=account, runtime=runtime, on_message=lambda: None)
         await handler(_parse(frame), None)
 
     run(run_scenario())
@@ -97,7 +97,7 @@ def test_duplicate_frames_are_forwarded_once(tmp_dir, stub_decrypt) -> None:
 def test_arouse_records_are_never_forwarded(tmp_dir, stub_decrypt) -> None:
     """会话预热数据不是私信，不能推给飞书。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    supervisor.publish_event('info', '', 'sentinel')
+    supervisor.publish_event(level='info', account_id='', message='sentinel')
     before = len(supervisor.messages)
     # dispatch_message 会捕获 KeyError 并记 debug 日志，不应该产生消息记录
     from goofishpostman.goofish_live import GoofishLive
@@ -188,7 +188,13 @@ def test_kept_trade_card_is_forwarded_with_its_text(tmp_dir, stub_decrypt) -> No
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
         supervisor,
-        push_frame(encrypted_record(push_payload_with_content(KEPT_TRADE_CARD_CONTENT, '[交易消息]', 'keep-1'))),
+        push_frame(
+            encrypted_record(
+                push_payload_with_content(
+                    content=KEPT_TRADE_CARD_CONTENT, reminder_content='[交易消息]', message_id='keep-1'
+                )
+            )
+        ),
     )
 
     text = notifier.card_payloads[0]['content']
@@ -201,7 +207,13 @@ def test_other_trade_cards_are_recorded_but_not_pushed(tmp_dir, stub_decrypt) ->
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
         supervisor,
-        push_frame(encrypted_record(push_payload_with_content(TRADE_CARD_CONTENT, '[交易消息]', 'silent-1'))),
+        push_frame(
+            encrypted_record(
+                push_payload_with_content(
+                    content=TRADE_CARD_CONTENT, reminder_content='[交易消息]', message_id='silent-1'
+                )
+            )
+        ),
     )
 
     assert notifier.sent == []
@@ -211,7 +223,14 @@ def test_other_trade_cards_are_recorded_but_not_pushed(tmp_dir, stub_decrypt) ->
 def test_video_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
     """视频消息要把媒体信息（地址/封面/时长）一并交给推送器去上传。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record(push_payload_with_content(VIDEO_CONTENT, '[视频]', 'video-1'))))
+    replay(
+        supervisor,
+        push_frame(
+            encrypted_record(
+                push_payload_with_content(content=VIDEO_CONTENT, reminder_content='[视频]', message_id='video-1')
+            )
+        ),
+    )
 
     card = notifier.card_payloads[0]
     assert card['content'] == f'[视频]\n{VIDEO_URL}'
@@ -222,7 +241,14 @@ def test_video_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
 def test_audio_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
     """语音消息同理（时长按秒给到卡片上做人读的说明）。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record(push_payload_with_content(AUDIO_CONTENT, '[语音]', 'audio-1'))))
+    replay(
+        supervisor,
+        push_frame(
+            encrypted_record(
+                push_payload_with_content(content=AUDIO_CONTENT, reminder_content='[语音]', message_id='audio-1')
+            )
+        ),
+    )
 
     card = notifier.card_payloads[0]
     assert card['content'] == '[语音]\n时长 8 秒\nhttps://example.com/voice.amr'
@@ -268,7 +294,9 @@ def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) 
 def test_reply_to_foreign_message_is_only_logged(tmp_dir, stub_decrypt) -> None:
     """引用的是别人（或机器人自己）的消息时：不在群里回话，只在日志/事件流里记一笔。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    run(supervisor.forward_feishu_reply('om-别人的消息', '你们好', 'om-user-1'))
+    run(
+        supervisor.forward_feishu_reply(feishu_message_id='om-别人的消息', text='你们好', source_message_id='om-user-1')
+    )
 
     assert notifier.replies == []  # 群里不冒提示
     logged = [event.message for event in supervisor.events]
@@ -279,7 +307,7 @@ def test_reply_to_foreign_message_is_only_logged(tmp_dir, stub_decrypt) -> None:
 def test_reply_without_quoting_anything_is_only_logged(tmp_dir, stub_decrypt) -> None:
     """只是 @ 机器人、没引用任何消息：同样只在日志里记。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    run(supervisor.forward_feishu_reply('', '在吗', 'om-user-1'))
+    run(supervisor.forward_feishu_reply(feishu_message_id='', text='在吗', source_message_id='om-user-1'))
 
     assert notifier.replies == []
     assert any('未转发飞书消息：该消息未引用任何消息' in event.message for event in supervisor.events)
@@ -329,7 +357,7 @@ def test_reply_peer_name_falls_back_to_learned_and_card(tmp_dir, stub_decrypt) -
     link = MessageLink(account_id=account.id, cid='62367910600', toid='2221610863462')
 
     async def describe() -> str:
-        return await supervisor._describe_reply(account, link, 'om-card-1')
+        return await supervisor._describe_reply(account=account, link=link, feishu_message_id='om-card-1')
 
     # 1) 报文里学到的（每张卡片发出时都会记）
     supervisor._remember_peer_name('62367910600', '买家小王')

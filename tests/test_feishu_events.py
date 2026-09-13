@@ -88,7 +88,7 @@ def test_extract_text_handles_broken_content() -> None:
 
 
 def test_listener_without_credentials_does_not_start_a_thread() -> None:
-    listener = FeishuReplyListener('', '', lambda *_: None)
+    listener = FeishuReplyListener(app_id='', app_secret='', on_reply=lambda *_: None)
     listener.start()
     assert listener._thread is None
 
@@ -107,7 +107,7 @@ def test_listener_reports_ignored_events_to_the_log() -> None:
     async def on_ignored(detail: str) -> None:
         ignored.append(detail)
 
-    listener = FeishuReplyListener('cli_1', 'sec', on_reply, on_ignored=on_ignored)
+    listener = FeishuReplyListener(app_id='cli_1', app_secret='sec', on_reply=on_reply, on_ignored=on_ignored)
     listener.loop = FakeLoop()
 
     import goofishpostman.feishu_events as module
@@ -140,7 +140,7 @@ def test_listener_submits_the_reply_to_the_main_loop() -> None:
     async def on_reply(target: str, text: str, message_id: str) -> None:
         recorded.append((target, text, message_id))
 
-    listener = FeishuReplyListener('cli_1', 'sec', on_reply)
+    listener = FeishuReplyListener(app_id='cli_1', app_secret='sec', on_reply=on_reply)
     listener.loop = FakeLoop()
     submitted: list[object] = []
 

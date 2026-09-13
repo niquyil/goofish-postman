@@ -250,7 +250,7 @@ class Store:
         if not self.path.exists():
             return StoreData()
         try:
-            raw = loads(self.path.read_text(encoding='utf-8'))
+            raw = loads(self.path.read_text('utf-8'))
         except (JSONDecodeError, OSError) as e:
             raise RuntimeError(f'配置文件损坏: {self.path} ({e})') from e
         return StoreData.model_validate(raw)

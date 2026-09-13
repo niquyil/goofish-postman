@@ -194,7 +194,7 @@ class GoofishLive:
         await websocket.send(dumps(msg))
 
     async def send_text(self, websocket: ClientConnection, cid: str, toid: str, text: str) -> None:
-        await self.send_message(websocket, cid, toid, TextMessage(text=text))
+        await self.send_message(websocket=websocket, cid=cid, toid=toid, message=TextMessage(text=text))
 
     async def init(self, websocket: ClientConnection) -> None:
         # 换 token 失败＝登录态废了（实测服务端回 FAIL_SYS_SESSION_EXPIRED::Session过期），
@@ -301,10 +301,10 @@ class GoofishLive:
         """
         websocket = self.websocket
         if websocket is not None:
-            await self.send_text(websocket, cid, toid, text)
+            await self.send_text(websocket=websocket, cid=cid, toid=toid, text=text)
             return
         async with self._connect() as temporary:
-            await self.send_text(temporary, cid, toid, text)
+            await self.send_text(websocket=temporary, cid=cid, toid=toid, text=text)
 
     async def synchronize_state(self, websocket: ClientConnection) -> None:
         """主动取一次同步状态（服务端说"同步数据太长"时走这条）。

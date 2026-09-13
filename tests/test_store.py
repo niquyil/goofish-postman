@@ -279,14 +279,20 @@ class FakeLarkClient:
     def build_response(self, name: str) -> FakeLarkResponse:
         match name:
             case 'message':
-                return FakeLarkResponse(self.message_code, 'send denied', SimpleNamespace(message_id='om_1'))
+                return FakeLarkResponse(
+                    code=self.message_code, msg='send denied', data=SimpleNamespace(message_id='om_1')
+                )
             case 'image':
-                return FakeLarkResponse(self.image_code, 'upload denied', SimpleNamespace(image_key='img-key-1'))
+                return FakeLarkResponse(
+                    code=self.image_code, msg='upload denied', data=SimpleNamespace(image_key='img-key-1')
+                )
             case 'file':
-                return FakeLarkResponse(self.file_code, 'file upload denied', SimpleNamespace(file_key='file-key-1'))
+                return FakeLarkResponse(
+                    code=self.file_code, msg='file upload denied', data=SimpleNamespace(file_key='file-key-1')
+                )
             case _:
                 items = [SimpleNamespace(chat_id='oc_chat1', name='卖家消息')]
-                return FakeLarkResponse(self.chat_code, 'list denied', SimpleNamespace(items=items))
+                return FakeLarkResponse(code=self.chat_code, msg='list denied', data=SimpleNamespace(items=items))
 
     def count(self, name: str) -> int:
         return sum(1 for resource, _ in self.calls if resource == name)
@@ -300,7 +306,9 @@ def test_message_links_round_trip_and_are_bounded(tmp_dir) -> None:
     from goofishpostman.store import _MAX_MESSAGE_LINKS, MessageLink
 
     store = Store(tmp_dir / 'a.json')
-    store.remember_message_link('om-1', 'acct-1', '54995284239', '2221114099805', '买家小王')
+    store.remember_message_link(
+        message_id='om-1', account_id='acct-1', cid='54995284239', toid='2221114099805', peer_name='买家小王'
+    )
 
     reloaded = Store(store.path)
     link = reloaded.get_message_link('om-1')
@@ -313,7 +321,7 @@ def test_message_links_round_trip_and_are_bounded(tmp_dir) -> None:
         f'om-seed{index}': MessageLink(account_id='acct-1', cid='cid', toid='toid')
         for index in range(_MAX_MESSAGE_LINKS)
     }
-    store.remember_message_link('om-new', 'acct-1', 'cid', 'toid')
+    store.remember_message_link(message_id='om-new', account_id='acct-1', cid='cid', toid='toid')
     assert len(store.data.message_links) == _MAX_MESSAGE_LINKS
     assert store.get_message_link('om-1') is None  # 最早的被挤掉了
     assert store.get_message_link('om-new') is not None
@@ -360,8 +368,8 @@ def make_notifier(monkeypatch, lark: FakeLarkClient, downloads: FakeDownloadClie
     notifier = FeishuNotifier(
         app_id='cli_1' if app else '', app_secret='appsecret' if app else '', chat_id='oc_chat1' if app else ''
     )
-    monkeypatch.setattr(notifier, '_client', lark)
-    monkeypatch.setattr(notifier, '_media_client', downloads or FakeDownloadClient())
+    monkeypatch.setattr(target=notifier, name='_client', value=lark)
+    monkeypatch.setattr(target=notifier, name='_media_client', value=downloads or FakeDownloadClient())
     return notifier
 
 
@@ -374,7 +382,11 @@ def test_message_is_sent_through_the_sdk(monkeypatch) -> None:
     """发消息走 lark-oapi 的 im.v1.message.create，receive_id_type=chat_id。"""
     lark = FakeLarkClient()
     notifier = make_notifier(monkeypatch, lark)
-    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, '在吗', details={'时间': '09-12 22:30:00'}))
+    run(
+        notifier.send_account_message(
+            account_label='主力号', info={'send_user_name': '买家'}, text='在吗', details={'时间': '09-12 22:30:00'}
+        )
+    )
 
     request = lark.last('message')
     assert request.uri == '/open-apis/im/v1/messages'
@@ -403,7 +415,7 @@ def test_nothing_is_sent_without_target_chat(monkeypatch) -> None:
     """只填了应用凭据、没选目标群时不发送（也不报错）。"""
     lark = FakeLarkClient()
     notifier = make_notifier(monkeypatch, lark, app=False)
-    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, '在吗'))
+    run(notifier.send_account_message(account_label='主力号', info={'send_user_name': '买家'}, text='在吗'))
 
     assert lark.calls == []
 
@@ -412,7 +424,7 @@ def test_send_failure_raises_notify_error(monkeypatch) -> None:
     """SDK 返回失败要抛 NotifyError（Supervisor 会记事件，不会静默丢消息）。"""
     from goofishpostman.accounts import NotifyError
 
-    lark = FakeLarkClient(message_code=230002)
+    lark = FakeLarkClient(230002)
     notifier = make_notifier(monkeypatch, lark)
     with raises(NotifyError, match='230002'):
         run(notifier.send('在吗'))
@@ -422,9 +434,11 @@ def test_image_is_uploaded_through_the_sdk(monkeypatch) -> None:
     """图片走 SDK 的 im.v1.image.create 换 image_key，再内嵌进卡片正文。"""
     lark = FakeLarkClient()
     downloads = FakeDownloadClient()
-    notifier = make_notifier(monkeypatch, lark, downloads)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=downloads)
     run(
-        notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
+        notifier.send_account_message(
+            account_label='主力号', info={'send_user_name': '买家'}, text=f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,)
+        )
     )
 
     upload = lark.last('image')
@@ -443,9 +457,11 @@ def test_image_is_uploaded_through_the_sdk(monkeypatch) -> None:
 def test_image_keeps_link_when_download_not_possible(monkeypatch) -> None:
     """图片下载不到时（例如地址过期）正文里保留可点开的地址，消息照发。"""
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(status_code=420))
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=FakeDownloadClient(420))
     run(
-        notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
+        notifier.send_account_message(
+            account_label='主力号', info={'send_user_name': '买家'}, text=f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,)
+        )
     )
 
     assert lark.count('image') == 0
@@ -458,7 +474,9 @@ def test_upload_failure_falls_back_to_the_link(monkeypatch) -> None:
     lark = FakeLarkClient(image_code=234001)
     notifier = make_notifier(monkeypatch, lark)
     run(
-        notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,))
+        notifier.send_account_message(
+            account_label='主力号', info={'send_user_name': '买家'}, text=f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,)
+        )
     )
 
     elements = card_of(lark.last('message'))['body']['elements']
@@ -469,11 +487,14 @@ def test_same_image_is_uploaded_once(monkeypatch) -> None:
     """同一张图（含重复下发的同一条消息）只上传/下载一次。"""
     lark = FakeLarkClient()
     downloads = FakeDownloadClient()
-    notifier = make_notifier(monkeypatch, lark, downloads)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=downloads)
     for _ in range(3):
         run(
             notifier.send_account_message(
-                '主力号', {'send_user_name': '买家'}, f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,)
+                account_label='主力号',
+                info={'send_user_name': '买家'},
+                text=f'[图片]\n{IMAGE_URL}',
+                images=(IMAGE_URL,),
             )
         )
 
@@ -501,9 +522,13 @@ def test_video_is_uploaded_and_embedded_in_the_card(monkeypatch) -> None:
     """视频：上传 mp4 换 file_key、封面换 img_key，再用 video 组件内嵌进卡片。"""
     lark = FakeLarkClient()
     downloads = FakeDownloadClient(image=b'\x00\x00\x00 ftypisom' + b'\x00' * 32)
-    notifier = make_notifier(monkeypatch, lark, downloads)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=downloads)
     media = {'kind': 'video', 'url': VIDEO_URL, 'cover': COVER_URL, 'duration': 12}
-    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+    run(
+        notifier.send_account_message(
+            account_label='主力号', info={'send_user_name': '买家'}, text=f'[视频]\n{VIDEO_URL}', media=media
+        )
+    )
 
     upload = lark.last('file')
     assert upload.uri == '/open-apis/im/v1/files'
@@ -527,11 +552,14 @@ def test_video_is_uploaded_and_embedded_in_the_card(monkeypatch) -> None:
 def test_audio_is_sent_as_a_separate_voice_message(monkeypatch) -> None:
     """语音：OPUS 直接上传，卡片里保留 [语音] 标注，随后补发一条 audio 消息。"""
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=OPUS_BYTES))
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=FakeDownloadClient(image=OPUS_BYTES))
     media = {'kind': 'audio', 'url': 'https://example.com/voice.opus', 'cover': '', 'duration': 8}
     run(
         notifier.send_account_message(
-            '主力号', {'send_user_name': '买家'}, '[语音]\nhttps://example.com/voice.opus', media=media
+            account_label='主力号',
+            info={'send_user_name': '买家'},
+            text='[语音]\nhttps://example.com/voice.opus',
+            media=media,
         )
     )
 
@@ -555,11 +583,14 @@ def test_audio_without_opus_or_ffmpeg_falls_back_to_the_link(monkeypatch) -> Non
     """飞书只收 OPUS；本机没有 ffmpeg 时不上传，保留链接（消息照发）。"""
     monkeypatch.setattr('goofishpostman.accounts.which', lambda name: None)
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=b'#!AMR\n\x00\x00'))
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=FakeDownloadClient(image=b'#!AMR\n\x00\x00'))
     media = {'kind': 'audio', 'url': 'https://example.com/voice.amr', 'cover': '', 'duration': 5}
     run(
         notifier.send_account_message(
-            '主力号', {'send_user_name': '买家'}, '[语音]\nhttps://example.com/voice.amr', media=media
+            account_label='主力号',
+            info={'send_user_name': '买家'},
+            text='[语音]\nhttps://example.com/voice.amr',
+            media=media,
         )
     )
 
@@ -571,13 +602,18 @@ def test_audio_without_opus_or_ffmpeg_falls_back_to_the_link(monkeypatch) -> Non
 def test_audio_is_transcoded_when_ffmpeg_exists(monkeypatch) -> None:
     """本机有 ffmpeg 时把非 OPUS 语音转成 OPUS 再上传（转码本身在别的用例里不该执行）。"""
     monkeypatch.setattr('goofishpostman.accounts.which', lambda name: '/usr/bin/ffmpeg')
-    monkeypatch.setattr(FeishuNotifier, '_transcode_with_ffmpeg', staticmethod(lambda data: OPUS_BYTES))
+    monkeypatch.setattr(
+        target=FeishuNotifier, name='_transcode_with_ffmpeg', value=staticmethod(lambda data: OPUS_BYTES)
+    )
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=b'#!AMR\n\x00\x00'))
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=FakeDownloadClient(image=b'#!AMR\n\x00\x00'))
     media = {'kind': 'audio', 'url': 'https://example.com/voice.amr', 'cover': '', 'duration': 5}
     run(
         notifier.send_account_message(
-            '主力号', {'send_user_name': '买家'}, '[语音]\nhttps://example.com/voice.amr', media=media
+            account_label='主力号',
+            info={'send_user_name': '买家'},
+            text='[语音]\nhttps://example.com/voice.amr',
+            media=media,
         )
     )
 
@@ -588,9 +624,13 @@ def test_audio_is_transcoded_when_ffmpeg_exists(monkeypatch) -> None:
 def test_media_upload_failure_falls_back_to_the_link(monkeypatch) -> None:
     """上传失败不能把整条推送带崩：退回链接，卡片照发。"""
     lark = FakeLarkClient(file_code=234006)
-    notifier = make_notifier(monkeypatch, lark, FakeDownloadClient(image=b'\x00' * 64))
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=FakeDownloadClient(image=b'\x00' * 64))
     media = {'kind': 'video', 'url': VIDEO_URL, 'cover': '', 'duration': 0}
-    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+    run(
+        notifier.send_account_message(
+            account_label='主力号', info={'send_user_name': '买家'}, text=f'[视频]\n{VIDEO_URL}', media=media
+        )
+    )
 
     card = card_of(lark.last('message'))
     assert card['body']['elements'][0]['content'] == f'[视频]\n[{VIDEO_URL}]({VIDEO_URL})'
@@ -603,9 +643,13 @@ def test_video_duration_is_read_from_the_file_when_payload_says_zero(monkeypatch
 
     lark = FakeLarkClient()
     downloads = FakeDownloadClient(image=mp4_with_duration(19412, timescale=1000))
-    notifier = make_notifier(monkeypatch, lark, downloads)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=downloads)
     media = {'kind': 'video', 'url': VIDEO_URL, 'cover': '', 'duration': 0}
-    run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+    run(
+        notifier.send_account_message(
+            account_label='主力号', info={'send_user_name': '买家'}, text=f'[视频]\n{VIDEO_URL}', media=media
+        )
+    )
 
     assert lark.last('file').body.duration == 19412
 
@@ -614,10 +658,14 @@ def test_same_video_is_uploaded_once(monkeypatch) -> None:
     """同一条消息重复下发（实测会重复 6 次）时视频只上传一次。"""
     lark = FakeLarkClient()
     downloads = FakeDownloadClient(image=b'\x00' * 64)
-    notifier = make_notifier(monkeypatch, lark, downloads)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=downloads)
     media = {'kind': 'video', 'url': VIDEO_URL, 'cover': '', 'duration': 0}
     for _ in range(3):
-        run(notifier.send_account_message('主力号', {'send_user_name': '买家'}, f'[视频]\n{VIDEO_URL}', media=media))
+        run(
+            notifier.send_account_message(
+                account_label='主力号', info={'send_user_name': '买家'}, text=f'[视频]\n{VIDEO_URL}', media=media
+            )
+        )
 
     assert lark.count('file') == 1
     assert downloads.urls == [VIDEO_URL]

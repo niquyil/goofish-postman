@@ -6,7 +6,9 @@ from asyncio import run
 from re import search
 
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 
+from goofishpostman.accounts import FeishuNotifier
 from goofishpostman.path import BUILD_STAMP
 from goofishpostman.store import Store
 from goofishpostman.supervisor import _MAX_MESSAGES, MessageRecord, Supervisor
@@ -176,9 +178,13 @@ def test_notify_roundtrip_never_returns_secret(tmp_dir) -> None:
         'app_id': '',
         'app_secret_set': False,
         'chat_id': '',
+        'chat_name': '',
         'has_app_credentials': False,
         'configured': False,
         'enabled': True,
+        'chats': [],
+        'chats_fetched_at': '',
+        'chats_hint': '群列表还没缓存：填好应用 ID 与密钥后点「获取群列表」',
     }
 
     response = harness.client.put(
@@ -197,6 +203,41 @@ def test_notify_roundtrip_never_returns_secret(tmp_dir) -> None:
     # 推送器已按新配置重建
     assert harness.supervisor.notifier.app_id == 'cli_1'
     assert harness.supervisor.notifier.can_send_via_app is True
+
+
+def test_notify_chat_list_is_cached(tmp_dir, monkeypatch: MonkeyPatch) -> None:
+    """「获取群列表」的结果要缓存：再次打开页面/刷新状态都用缓存，不再去调飞书接口。
+
+    原来前端每次 loadNotify() 都会拉一次群列表（页面刷新就打一次），而且保存配置后
+    下拉框只剩群 id（群名丢了，显示成「oc_xxx（oc_xxx）」）。
+    """
+    harness = build_harness(tmp_dir)
+    harness.client.put('/api/notify', json={'app_id': 'cli_1', 'app_secret': 's3cret', 'chat_id': 'oc_1'})
+
+    calls: list[str] = []
+
+    async def fake_list_chats(self) -> list[dict[str, str]]:
+        calls.append(self.app_id)
+        return [{'chat_id': 'oc_1', 'name': '闲鱼消息汇总'}, {'chat_id': 'oc_2', 'name': ''}]
+
+    monkeypatch.setattr(FeishuNotifier, 'list_chats', fake_list_chats)
+    body = harness.client.get('/api/notify/chats').json()
+    assert [chat['chat_id'] for chat in body['chats']] == ['oc_1', 'oc_2']
+    # 群名列不出来（机器人不在群里/接口没给名字）时，不要显示成「oc_2（oc_2）」
+    assert body['chats'][0]['label'] == '闲鱼消息汇总（oc_1）'
+    assert body['chats'][1]['label'] == 'oc_2'
+    assert body['chat_name'] == '闲鱼消息汇总'
+    assert calls == ['cli_1']
+
+    # 缓存落盘：/api/notify、/api/state、首屏 HTML 全都直接用缓存，不再调接口
+    assert harness.store.data.notify.chats_fetched_at is not None
+    assert harness.client.get('/api/notify').json()['chats'][0]['name'] == '闲鱼消息汇总'
+    assert harness.client.get('/api/state').json()['notify']['chats'][1]['chat_id'] == 'oc_2'
+
+    html = harness.client.get('/').text
+    assert '<option value="oc_1" title="oc_1" selected>闲鱼消息汇总（oc_1）</option>' in html
+    assert '群列表缓存于' in html
+    assert calls == ['cli_1']  # 页面渲染不该再去调飞书
 
 
 def test_notify_requires_app_credentials_for_chat_list(tmp_dir) -> None:

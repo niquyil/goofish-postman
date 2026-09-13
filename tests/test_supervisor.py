@@ -280,22 +280,32 @@ def test_build_snapshot_shape(tmp_dir) -> None:
         # notify 段来自持久化配置，而不是推送器实例
         assert snapshot['notify'] == {
             'app_id': '',
-            'chat_id': '',
             'app_secret_set': False,
+            'chat_id': '',
+            'chat_name': '',
             'has_app_credentials': False,
             'configured': False,
             'enabled': True,
+            'chats': [],
+            'chats_fetched_at': '',
+            'chats_hint': '群列表还没缓存：填好应用 ID 与密钥后点「获取群列表」',
         }
 
-        store.update_notify(app_id='cli_9', app_secret='sec', chat_id='oc_9')
+        store.update_notify(app_id='cli_9', app_secret='s3cr3t!', chat_id='oc_9')
+        store.update_notify_chats([{'chat_id': 'oc_9', 'name': '闲鱼消息汇总'}])
         assert supervisor.build_snapshot()['notify'] == {
             'app_id': 'cli_9',
-            'chat_id': 'oc_9',
             'app_secret_set': True,
+            'chat_id': 'oc_9',
+            'chat_name': '闲鱼消息汇总',
             'has_app_credentials': True,
             'configured': True,
             'enabled': True,
+            'chats': [{'chat_id': 'oc_9', 'name': '闲鱼消息汇总', 'label': '闲鱼消息汇总（oc_9）'}],
+            'chats_fetched_at': store.data.notify.chats_fetched_at.isoformat(timespec='seconds'),
+            'chats_hint': store.data.notify.chats_hint,
         }
+        assert 's3cr3t!' not in str(supervisor.build_snapshot())  # 密钥不进快照
 
     run(run_scenario())
 

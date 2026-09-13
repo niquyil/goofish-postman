@@ -248,14 +248,7 @@ class WebApp:
                 'accounts': [runtime.to_template() for runtime in self.supervisor.runtimes.values()],
                 'messages': [record.to_public() for record in reversed(self.supervisor.messages)],
                 'events': [event.to_public() for event in reversed(self.supervisor.events)],
-                'notify': {
-                    'app_id': self.store.data.notify.app_id,
-                    'app_secret_set': bool(self.store.data.notify.app_secret),
-                    'chat_id': self.store.data.notify.chat_id,
-                    'has_app_credentials': self.store.data.notify.has_app_credentials,
-                    'configured': self.store.data.notify.configured,
-                    'enabled': self.store.data.notify.enabled,
-                },
+                'notify': self.store.data.notify.to_public(),
             },
         )
 
@@ -362,21 +355,10 @@ class WebApp:
 
     # ── 飞书配置 ──────────────────────────────────────────────────────────────
     async def api_get_notify(self) -> Response:
-        notify = self.store.data.notify
-        return ChineseJSONResponse(
-            {
-                'ok': True,
-                'app_id': notify.app_id,
-                'app_secret_set': bool(notify.app_secret),
-                'chat_id': notify.chat_id,
-                'has_app_credentials': notify.has_app_credentials,
-                'configured': notify.configured,
-                'enabled': notify.enabled,
-            }
-        )
+        return ChineseJSONResponse({'ok': True, **self.store.data.notify.to_public()})
 
     async def api_list_notify_chats(self) -> Response:
-        """用自建应用列出机器人所在的群（界面上挑一个当推送目标）。"""
+        """用自建应用列出机器人所在的群（界面上挑一个当推送目标），并把结果缓存在本地。"""
         notify = self.store.data.notify
         if not notify.has_app_credentials:
             return ChineseJSONResponse({'ok': False, 'error': '先填应用 ID 与密钥'}, status_code=400)
@@ -387,7 +369,9 @@ class WebApp:
             return ChineseJSONResponse({'ok': False, 'error': str(e)}, status_code=502)
         finally:
             await notifier.close()
-        return ChineseJSONResponse({'ok': True, 'chats': chats})
+        # 缓存下来：页面重开、进程重启都不必再调一次飞书接口（界面上还能顺手显示缓存时间）
+        cached = self.store.update_notify_chats(chats)
+        return ChineseJSONResponse({'ok': True, **cached.to_public()})
 
     async def api_update_notify(self, body: NotifyBody) -> Response:
         changes = {key: value for key, value in body.model_dump().items() if value is not None}
@@ -400,16 +384,7 @@ class WebApp:
         self.supervisor.publish_event(
             'info', '', '飞书推送配置已更新' if notify.configured else '飞书推送配置已更新（还不完整，补齐后才会发送）'
         )
-        return ChineseJSONResponse(
-            {
-                'ok': True,
-                'app_id': notify.app_id,
-                'chat_id': notify.chat_id,
-                'has_app_credentials': notify.has_app_credentials,
-                'configured': notify.configured,
-                'enabled': notify.enabled,
-            }
-        )
+        return ChineseJSONResponse({'ok': True, **notify.to_public()})
 
     # ── 扫码登录 ──────────────────────────────────────────────────────────────
     async def api_start_qr_login(self) -> Response:

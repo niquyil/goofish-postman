@@ -206,7 +206,8 @@ function createDocument(templateIds) {
 
   const ids = [
     'accounts', 'messages', 'events', 'account-count', 'message-count', 'event-count',
-    'notify-uuid', 'notify-secret', 'notify-enabled', 'notify-state', 'notify-card',
+    'notify-app-id', 'notify-app-secret', 'notify-enabled', 'notify-state', 'notify-card',
+    'notify-chat-id', 'notify-chat-hint', 'notify-load-chats',
     'add-form', 'add-name', 'add-cookie', 'add-enabled', 'toggle-add', 'cancel-add',
     'qr-open', 'qr-close', 'qr-refresh', 'qr-modal', 'qr-box', 'qr-placeholder',
     'qr-status', 'qr-error', 'sse-state', 'refresh', 'toast', 'login-form', 'login-error',
@@ -495,6 +496,76 @@ check('模板里缺 .account-error 时也只跳过错误行，不炸掉整份列
   } finally {
     main.children = backup;
   }
+});
+
+// ── 飞书目标群下拉框 ─────────────────────────────────────────────────────────
+// 群列表由后端缓存后随配置一起下发，前端只负责渲染；打开页面不再打飞书接口。
+const CACHED_CHATS = [
+  { chat_id: 'oc_1', name: '闲鱼消息汇总', label: '闲鱼消息汇总（oc_1）' },
+  { chat_id: 'oc_2', name: '', label: 'oc_2' }, // 拿不到群名时 label 就是 id
+];
+
+function setNotify(settings) {
+  vm.runInContext(`notifySettings = ${JSON.stringify(settings)}`, sandbox);
+}
+
+check('renderChatOptions 用缓存的群列表渲染，群名与群 id 一起显示', () => {
+  sandbox.renderChatOptions(CACHED_CHATS, 'oc_1');
+  const options = document.getElementById('notify-chat-id').children;
+
+  assert.strictEqual(options.length, 2);
+  assert.deepStrictEqual(
+    options.map((option) => option.value),
+    ['oc_1', 'oc_2'],
+  );
+  assert.strictEqual(options[0].textContent, '闲鱼消息汇总（oc_1）');
+  assert.strictEqual(options[1].textContent, 'oc_2', '群名缺失时不该显示成 oc_2（oc_2）');
+  assert.strictEqual(options[0].selected, true, '当前目标群应被选中');
+  assert.strictEqual(options[0].title, 'oc_1', '群 id 放 title，悬停可见');
+});
+
+check('renderChatOptions 目标群不在缓存里时仍保留该选项（不会跳到别的群）', () => {
+  // 例如机器人被移出了群，或群 id 是手填的：重绘后不能把配置悄悄改成第一个群
+  sandbox.renderChatOptions(CACHED_CHATS, 'oc_manual');
+  const options = document.getElementById('notify-chat-id').children;
+
+  assert.deepStrictEqual(
+    options.map((option) => option.value),
+    ['oc_manual', 'oc_1', 'oc_2'],
+  );
+  assert.strictEqual(options[0].selected, true);
+});
+
+check('renderChatOptions 既没缓存也没选目标群时给出提示项', () => {
+  sandbox.renderChatOptions([], '');
+  const options = document.getElementById('notify-chat-id').children;
+
+  assert.strictEqual(options.length, 1);
+  assert.strictEqual(options[0].value, '');
+  assert.ok(options[0].textContent.includes('获取群列表'), options[0].textContent);
+});
+
+check('renderNotify 用缓存渲染下拉框并显示缓存状态文案', () => {
+  setNotify({
+    app_id: 'cli_1',
+    app_secret_set: true,
+    chat_id: 'oc_2',
+    chat_name: '',
+    has_app_credentials: true,
+    configured: true,
+    enabled: true,
+    chats: CACHED_CHATS,
+    chats_hint: '群列表缓存于 09-13 02:10:00，共 2 个（点「获取群列表」可刷新）',
+  });
+  sandbox.renderNotify();
+
+  const options = document.getElementById('notify-chat-id').children;
+  assert.strictEqual(options.length, 2);
+  assert.strictEqual(options[1].selected, true, '应选中配置里的目标群');
+  assert.ok(
+    document.getElementById('notify-chat-hint').textContent.includes('群列表缓存于'),
+    document.getElementById('notify-chat-hint').textContent,
+  );
 });
 
 // ── 扫码弹窗 ─────────────────────────────────────────────────────────────────

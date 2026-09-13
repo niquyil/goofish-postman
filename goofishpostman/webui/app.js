@@ -280,50 +280,65 @@ function renderNotify() {
     state.textContent = '未配置';
     state.className = 'pill pill-off';
   }
+  renderChatOptions(notifySettings.chats, notifySettings.chat_id);
+  // 文案由后端给（服务端首屏和前端刷新必须是同一句）
+  const hint = document.getElementById('notify-chat-hint');
+  if (hint) hint.textContent = notifySettings.chats_hint || '';
 }
 
 function renderChatOptions(chats, selected) {
   const select = document.getElementById('notify-chat-id');
+  const list = chats || [];
+  const current = selected || '';
   select.replaceChildren();
-  if (!chats.length) {
+
+  if (!list.length && !current) {
     const option = document.createElement('option');
     option.value = '';
-    option.textContent = '（没有拿到群，先把机器人拉进群再试）';
+    option.textContent = '（点「获取群列表」选择）';
     select.append(option);
     return;
   }
-  for (const chat of chats) {
-    const option = document.createElement('option');
-    option.value = chat.chat_id;
-    option.textContent = `${chat.name}（${chat.chat_id}）`;
-    if (chat.chat_id === selected) option.selected = true;
-    select.append(option);
+  // 目标群是手填的、或掉出了缓存（机器人被移出群）：也要留一个选项，
+  // 否则重绘后下拉框会"跳到"别的群，保存下去就把配置改了
+  if (current && !list.some((chat) => chat.chat_id === current)) {
+    select.append(chatOption({ chat_id: current, label: current }, true));
+  }
+  for (const chat of list) {
+    select.append(chatOption(chat, chat.chat_id === current));
   }
 }
 
+function chatOption(chat, isSelected) {
+  const option = document.createElement('option');
+  option.value = chat.chat_id;
+  option.textContent = chat.label || chat.chat_id;
+  option.title = chat.chat_id; // 群 id 太长，放 title 里，需要时悬停可见
+  option.selected = isSelected;
+  return option;
+}
+
 async function loadNotifyChats() {
+  const button = document.getElementById('notify-load-chats');
+  button.disabled = true;
   try {
-    const body = await api('/api/notify/chats');
-    renderChatOptions(body.chats || [], document.getElementById('notify-chat-id').value);
+    const body = await api('/api/notify/chats'); // 后端会把结果缓存下来
+    notifySettings = { ...notifySettings, ...body };
+    renderNotify();
     toast(`拿到 ${(body.chats || []).length} 个群`);
   } catch (error) {
     toast(error.message, true);
+  } finally {
+    button.disabled = false;
   }
 }
 
 async function loadNotify() {
   const body = await api('/api/notify');
-  notifySettings = {
-    app_id: body.app_id,
-    app_secret_set: body.app_secret_set,
-    chat_id: body.chat_id,
-    has_app_credentials: body.has_app_credentials,
-    configured: body.configured,
-    enabled: body.enabled,
-  };
+  notifySettings = body;
   renderNotify();
-  renderChatOptions(body.chat_id ? [{ chat_id: body.chat_id, name: body.chat_id }] : [], body.chat_id);
-  if (body.has_app_credentials) loadNotifyChats(); // 填了应用凭据就把群列表拉出来
+  // 群列表用本地缓存渲染就够（打开页面不再打飞书接口）；只有还没缓存过才自动拉一次
+  if (body.has_app_credentials && !(body.chats || []).length) loadNotifyChats();
 }
 
 // ── 数据加载与实时流 ────────────────────────────────────────────────────────

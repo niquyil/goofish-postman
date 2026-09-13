@@ -35,8 +35,17 @@
         </label>
         <label>
           <span>目标群</span>
+          [% set known_chats = notify.chats | map(attribute='chat_id') | list %]
           <select id="notify-chat-id">
-            [% if notify.chat_id %]<option value="[[ notify.chat_id ]]" selected>[[ notify.chat_id ]]</option>[% else %]<option value="">（未选择）</option>[% endif %]
+            [% for chat in notify.chats %]
+              <option value="[[ chat.chat_id ]]" title="[[ chat.chat_id ]]"[% if chat.chat_id == notify.chat_id %] selected[% endif %]>[[ chat.label ]]</option>
+            [% endfor %]
+            [% if notify.chat_id and notify.chat_id not in known_chats %]
+              <option value="[[ notify.chat_id ]]" selected>[[ notify.chat_id ]]</option>
+            [% endif %]
+            [% if not notify.chats and not notify.chat_id %]
+              <option value="">（点「获取群列表」选择）</option>
+            [% endif %]
           </select>
         </label>
         <label class="check">
@@ -49,6 +58,7 @@
       <p class="hint">
         已保存密钥：[[ '是' if notify.app_secret_set else '否' ]]
         ｜ 图片内嵌：[[ '已开启' if notify.has_app_credentials else '未开启（图片只给链接）' ]]
+        ｜ <span id="notify-chat-hint">[[ notify.chats_hint ]]</span>
       </p>
     </section>
 

@@ -154,6 +154,53 @@ def test_notify_is_not_configured_without_target_chat(tmp_dir) -> None:
     assert store.data.notify.configured is False
 
 
+def test_notify_chat_list_is_cached_on_disk(tmp_dir) -> None:
+    """群列表缓存要落盘：重启进程后重开页面也不用再调飞书接口。"""
+    store = Store(tmp_dir / 'a.json')
+    store.update_notify(app_id='cli_1', app_secret='s3cret', chat_id='oc_1')
+    assert store.data.notify.chats == []
+    assert '群列表还没缓存' in store.data.notify.chats_hint
+
+    chats = [
+        {'chat_id': 'oc_1', 'name': '闲鱼消息汇总'},
+        {'chat_id': 'oc_2', 'name': ''},
+        {'chat_id': '', 'name': '脏数据'},  # 没有群 id 的条目直接丢掉
+    ]
+    notify = store.update_notify_chats(chats)
+    assert [chat.chat_id for chat in notify.chats] == ['oc_1', 'oc_2']
+    assert notify.chat_name == '闲鱼消息汇总'
+    assert notify.chats_fetched_at is not None
+
+    reloaded = Store(store.path).data.notify
+    assert [chat.name for chat in reloaded.chats] == ['闲鱼消息汇总', '']
+    # 缓存命中时不再提示去拉群列表，而是说明缓存时间与条数
+    assert reloaded.chats_hint.startswith('群列表缓存于 ')
+    assert '共 2 个' in reloaded.chats_hint
+
+    # 界面/接口拿到的快照：群名缺失时 label 只给 id（避免「oc_2（oc_2）」），且不带密钥
+    public = reloaded.to_public()
+    assert public['chats'][0] == {'chat_id': 'oc_1', 'name': '闲鱼消息汇总', 'label': '闲鱼消息汇总（oc_1）'}
+    assert public['chats'][1]['label'] == 'oc_2'
+    assert public['chat_name'] == '闲鱼消息汇总'
+    assert 's3cret' not in str(public)
+
+
+def test_notify_chat_cache_is_bounded_and_app_id_change_clears_it(tmp_dir) -> None:
+    """缓存条数要有上限；换了应用后旧缓存作废（旧应用能看到的群对新应用不一定有效）。"""
+    store = Store(tmp_dir / 'a.json')
+    store.update_notify(app_id='cli_1', app_secret='s3cret')
+    store.update_notify_chats([{'chat_id': f'oc_{i}', 'name': f'群{i}'} for i in range(260)])
+    assert len(store.data.notify.chats) == 200
+
+    store.update_notify(app_id='cli_2')  # 换应用
+    assert store.data.notify.chats == []
+    assert store.data.notify.chats_fetched_at is None
+
+    store.update_notify_chats([{'chat_id': 'oc_9', 'name': '群9'}])
+    store.update_notify(app_id='cli_2', chat_id='oc_9')  # 同一个应用，缓存保留
+    assert [chat.chat_id for chat in store.data.notify.chats] == ['oc_9']
+
+
 # ── 飞书推送 ──────────────────────────────────────────────────────────────────
 def test_format_direction_carries_sender_and_receiver() -> None:
     """卡片标题的文案：发送方 → 接收方，不带【】前缀。"""

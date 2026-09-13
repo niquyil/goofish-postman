@@ -17,12 +17,15 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
+from .goofish_utils import format_time
 from .path import DATA_FILE
 
 # Cookie 里必须存在的字段：unb 是账号 id，缺了连不上
 REQUIRED_COOKIE_KEYS = ('unb', 'tracknick', '_m_h5_tk')
 # 飞书卡片 → 闲鱼会话 的对照表保留条数（防止无限增长）
 _MAX_MESSAGE_LINKS = 500
+# 缓存的群列表条数上限（机器人一般不会在这么多群里，纯粹防无限增长）
+_MAX_NOTIFY_CHATS = 200
 
 
 class Account(BaseModel):
@@ -139,6 +142,24 @@ class WebSettings(BaseModel):
     token: str = ''
 
 
+class NotifyChat(BaseModel):
+    """机器人所在的一个飞书群。"""
+
+    chat_id: str
+    name: str = ''
+
+    @property
+    def label(self) -> str:
+        """下拉框里的文案：群名（群 id）。群名缺失或与 id 相同时只显示 id，
+        避免出现「oc_xxx（oc_xxx）」这种看着像出错了的选项。"""
+        if not self.name or self.name == self.chat_id:
+            return self.chat_id
+        return f'{self.name}（{self.chat_id}）'
+
+    def to_public(self) -> dict[str, str]:
+        return {'chat_id': self.chat_id, 'name': self.name, 'label': self.label}
+
+
 class NotifySettings(BaseModel):
     """飞书推送配置（企业自建应用）。
 
@@ -151,6 +172,9 @@ class NotifySettings(BaseModel):
     # 发送目标（群 id，形如 oc_xxx）；机器人必须已经在这个群里
     chat_id: str = ''
     enabled: bool = True
+    # 拉取过的群列表（本地缓存）：换个页面/重启进程都不用再调一次飞书接口
+    chats: list[NotifyChat] = Field(default_factory=list)
+    chats_fetched_at: datetime | None = None
 
     @property
     def has_app_credentials(self) -> bool:
@@ -160,6 +184,33 @@ class NotifySettings(BaseModel):
     def configured(self) -> bool:
         """能发消息的前提：应用凭据 + 目标群。"""
         return bool(self.has_app_credentials and self.chat_id.strip())
+
+    @property
+    def chat_name(self) -> str:
+        """当前目标群的群名（缓存里有就带上，界面显示成「群名（id）」）。"""
+        return next((chat.name for chat in self.chats if chat.chat_id == self.chat_id), '')
+
+    @property
+    def chats_hint(self) -> str:
+        """群列表缓存的状态文案：服务端渲染与前端刷新共用一句，避免两边写法不一致。"""
+        if not self.chats:
+            return '群列表还没缓存：填好应用 ID 与密钥后点「获取群列表」'
+        return f'群列表缓存于 {format_time(self.chats_fetched_at)}，共 {len(self.chats)} 个（点「获取群列表」可刷新）'
+
+    def to_public(self) -> dict[str, Any]:
+        """界面 / 接口用的配置快照：只给「密钥是否已保存」，绝不回传 app_secret。"""
+        return {
+            'app_id': self.app_id,
+            'app_secret_set': bool(self.app_secret),
+            'chat_id': self.chat_id,
+            'chat_name': self.chat_name,
+            'has_app_credentials': self.has_app_credentials,
+            'configured': self.configured,
+            'enabled': self.enabled,
+            'chats': [chat.to_public() for chat in self.chats],
+            'chats_fetched_at': self.chats_fetched_at.isoformat(timespec='seconds') if self.chats_fetched_at else '',
+            'chats_hint': self.chats_hint,
+        }
 
 
 class MessageLink(BaseModel):
@@ -301,6 +352,24 @@ class Store:
 
     def update_notify(self, **changes: Any) -> NotifySettings:
         updates = {key: value for key, value in changes.items() if value is not None}
+        if 'app_id' in updates and updates['app_id'].strip() != self.data.notify.app_id.strip():
+            # 换了应用：旧应用能看到的群对新应用不一定有效（机器人可能不在里面），缓存作废
+            updates |= {'chats': [], 'chats_fetched_at': None}
         self.data.notify = self.data.notify.model_copy(update=updates)
+        self.save()
+        return self.data.notify
+
+    def update_notify_chats(self, chats: list[dict[str, str]]) -> NotifySettings:
+        """缓存一次「机器人所在的群」列表，省得每次打开页面都去调飞书接口。"""
+        cached = [
+            NotifyChat(chat_id=str(chat.get('chat_id', '')).strip(), name=str(chat.get('name', '')).strip())
+            for chat in chats
+        ]
+        self.data.notify = self.data.notify.model_copy(
+            update={
+                'chats': [chat for chat in cached if chat.chat_id][:_MAX_NOTIFY_CHATS],
+                'chats_fetched_at': datetime.now(UTC),
+            }
+        )
         self.save()
         return self.data.notify

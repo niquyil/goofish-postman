@@ -78,8 +78,8 @@ def test_init_reports_the_server_reason_for_an_expired_cookie() -> None:
 
 
 @mark.parametrize(
-    ('result', 'expected'),
-    [
+    argnames=('result', 'expected'),
+    argvalues=[
         ({'ret': ['FAIL_SYS_SESSION_EXPIRED::Session过期']}, 'Session过期'),
         ({'ret': ['FAIL_SYS_TOKEN_EXOIRED::令牌过期']}, '令牌过期'),
         ({'ret': ['FAIL_SYS_SERVICE_UNAVAILABLE']}, 'FAIL_SYS_SERVICE_UNAVAILABLE'),
@@ -107,7 +107,7 @@ def test_dispatch_message_reaches_handle_message() -> None:
     # 推送形态：data[0]['data']，明文 JSON 也能被 decrypt_data 直接吃下
     push = {'data': [{'data': dumps(payload, ensure_ascii=False)}]}
 
-    run(live.dispatch_message(push, FakeWebSocket()))
+    run(live.dispatch_message(message=push, websocket=FakeWebSocket()))
     assert received[0]['cid'] == 'CID'
     assert received[0]['send_message'] == '在吗'
 
@@ -121,7 +121,7 @@ def test_dispatch_message_ignores_non_message_pushes() -> None:
 
     live.handle_message = handle_message
     for message in ({}, {'headers': {'mid': '1'}}, {'lwp': '/s/vulcan'}, {'body': {}}):
-        run(live.dispatch_message(message, FakeWebSocket()))
+        run(live.dispatch_message(message=message, websocket=FakeWebSocket()))
     assert called == []
 
 
@@ -135,7 +135,7 @@ def test_sync_extra_type_triggers_get_state() -> None:
     websocket = FakeWebSocket()
     frame = {'lwp': '/s/sync', 'body': {'syncExtensionModel': {'fingerprint': -1}, 'syncExtraType': {'type': 2}}}
 
-    run(live.dispatch_message(frame, websocket))
+    run(live.dispatch_message(message=frame, websocket=websocket))
 
     assert len(websocket.sent) == 1
     request = websocket.sent[0]
@@ -149,11 +149,11 @@ def test_sync_state_response_is_acknowledged() -> None:
     live = make_live('TOKEN')
     websocket = FakeWebSocket()
     marker = {'lwp': '/s/sync', 'body': {'syncExtraType': {'type': 1}}}
-    run(live.dispatch_message(marker, websocket))
+    run(live.dispatch_message(message=marker, websocket=websocket))
 
     state = {'pipeline': 'sync', 'pts': 1, 'seq': 0}
     response = {'code': 200, 'headers': {'mid': live._pending_sync_mid}, 'body': state}
-    run(live.dispatch_message(response, websocket))
+    run(live.dispatch_message(message=response, websocket=websocket))
 
     assert [item['lwp'] for item in websocket.sent] == ['/r/SyncStatus/getState', '/r/SyncStatus/ackDiff']
     assert websocket.sent[1]['body'] == [state]
@@ -170,7 +170,7 @@ def test_sync_marker_frame_is_not_treated_as_message() -> None:
 
     live.handle_message = handle_message
     frame = {'body': {'syncExtraType': {'type': 2}}}
-    run(live.dispatch_message(frame, FakeWebSocket()))
+    run(live.dispatch_message(message=frame, websocket=FakeWebSocket()))
     assert called == []
 
 
@@ -180,7 +180,7 @@ def test_session_record_teaches_the_item_title() -> None:
     learned: list[tuple[str, str]] = []
     live.on_session_info = lambda sid, title: learned.append((sid, title))
 
-    run(live.dispatch_message(push_frame(plain_record(AROUSE_PAYLOAD)), FakeWebSocket()))
+    run(live.dispatch_message(message=push_frame(plain_record(AROUSE_PAYLOAD)), websocket=FakeWebSocket()))
 
     assert learned == [(SESSION_ID, '上海gan部在线学习笔记，详情请咨询。标价2026年全年包年')]
 
@@ -192,7 +192,7 @@ def test_message_frame_does_not_teach_a_title() -> None:
     live.on_session_info = lambda sid, title: learned.append((sid, title))
     live.handle_message = _noop
 
-    run(live.dispatch_message(push_frame(encrypted_record()), FakeWebSocket()))
+    run(live.dispatch_message(message=push_frame(encrypted_record()), websocket=FakeWebSocket()))
 
     assert learned == []
 
@@ -200,7 +200,7 @@ def test_message_frame_does_not_teach_a_title() -> None:
 def test_session_info_hook_is_optional() -> None:
     """没有上层回调时也不能炸（命令行单独跑时就是这样）。"""
     live = make_live('TOKEN')
-    run(live.dispatch_message(push_frame(plain_record(AROUSE_PAYLOAD)), FakeWebSocket()))
+    run(live.dispatch_message(message=push_frame(plain_record(AROUSE_PAYLOAD)), websocket=FakeWebSocket()))
 
 
 # ── 解析失败告警：要打记录本身，而不是每条都一样的帧头 ────────────────────────
@@ -215,7 +215,7 @@ def test_failed_parse_warning_describes_records() -> None:
     messages: list[str] = []
     sink_id = logger.add(lambda message: messages.append(str(message)), level='WARNING')
     try:
-        run(live.dispatch_message(push_frame(broken), FakeWebSocket()))
+        run(live.dispatch_message(message=push_frame(broken), websocket=FakeWebSocket()))
     finally:
         logger.remove(sink_id)
 

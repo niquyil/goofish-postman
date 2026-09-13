@@ -42,7 +42,7 @@ async def run_web(store: Store, host: str = '', port: int = 0, browser: bool = T
 
     notify = store.data.notify
     supervisor = Supervisor(
-        store, FeishuNotifier(app_id=notify.app_id, app_secret=notify.app_secret, chat_id=notify.chat_id)
+        store=store, notifier=FeishuNotifier(app_id=notify.app_id, app_secret=notify.app_secret, chat_id=notify.chat_id)
     )
     if notify.has_app_credentials:
         create_task(warm_up_feishu_sdk())
@@ -58,7 +58,7 @@ async def run_web(store: Store, host: str = '', port: int = 0, browser: bool = T
     ready: Future = get_running_loop().create_future()
     if browser:
         create_task(open_console(ready))
-    await serve(store, supervisor, host=host, port=port, ready=ready)
+    await serve(store=store, supervisor=supervisor, host=host, port=port, ready=ready)
 
 
 def build_parser() -> ArgumentParser:

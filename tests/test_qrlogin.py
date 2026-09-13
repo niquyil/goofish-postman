@@ -74,10 +74,10 @@ class QrHarness:
 def qr(tmp_dir) -> QrHarness:
     """装配好 FastAPI 应用，并把扫码四步全部替换成桩。"""
     store = Store(tmp_dir / 'accounts.json')
-    supervisor = Supervisor(store, RecordingNotifier())
+    supervisor = Supervisor(store=store, notifier=RecordingNotifier())
     supervisor.live_factory = FakeLive
     stub = StubQr()
-    client = TestClient(create_app(store, supervisor))
+    client = TestClient(create_app(store=store, supervisor=supervisor))
     with (
         patch.object(target=web_module, attribute='create_login_session', new=stub.create_login_session),
         patch.object(target=web_module, attribute='start_qr_login', new=stub.start_qr_login),
@@ -248,9 +248,9 @@ class FakeUpstreamSession:
         self.calls.append(url)
         if 'mini_login' in (url or ''):
             # 模拟 passport 域下发 XSRF-TOKEN
-            self.cookies.set('XSRF-TOKEN', 'csrf-token', domain='passport.goofish.com', path='/')
+            self.cookies.set(name='XSRF-TOKEN', value='csrf-token', domain='passport.goofish.com', path='/')
         if 'eg.js' in (url or ''):
-            self.cookies.set('cna', 'cna-value', domain='.mmstat.com', path='/')
+            self.cookies.set(name='cna', value='cna-value', domain='.mmstat.com', path='/')
         return FakeUpstreamResponse()
 
     def post(self, url=None, **kwargs):
@@ -283,9 +283,9 @@ def test_generate_device_id_defaults_to_none() -> None:
 
     # 形如 0387791C-BC62-4E7B-B0D6-57B10F5A3CE9-<user_id>
     pattern = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}-?(.*)'
-    assert fullmatch(pattern, generate_device_id()).group(1) == ''
-    assert fullmatch(pattern, generate_device_id(None)).group(1) == ''
-    assert fullmatch(pattern, generate_device_id('12345')).group(1) == '12345'
+    assert fullmatch(pattern=pattern, string=generate_device_id()).group(1) == ''
+    assert fullmatch(pattern=pattern, string=generate_device_id(None)).group(1) == ''
+    assert fullmatch(pattern=pattern, string=generate_device_id('12345')).group(1) == '12345'
     assert 'null' not in generate_device_id(None)
 
 
@@ -342,15 +342,15 @@ def test_build_session_cookie_string_filters_domains() -> None:
     from goofishpostman.qrlogin import build_session_cookie_string
 
     jar = RequestsCookieJar()
-    jar.set('unb', '1', domain='.goofish.com', path='/')
-    jar.set('tracknick', '名字', domain='.goofish.com', path='/')
-    jar.set('noise', 'x', domain='.example.com', path='/')
+    jar.set(name='unb', value='1', domain='.goofish.com', path='/')
+    jar.set(name='tracknick', value='名字', domain='.goofish.com', path='/')
+    jar.set(name='noise', value='x', domain='.example.com', path='/')
     text = build_session_cookie_string(type('S', (), {'cookies': jar})())
     assert text == 'unb=1; tracknick=名字'
     assert 'noise' not in text
 
 
-@mark.parametrize('status', [STATUS_SCANNED, STATUS_CONFIRMED, STATUS_EXPIRED])
+@mark.parametrize(argnames='status', argvalues=[STATUS_SCANNED, STATUS_CONFIRMED, STATUS_EXPIRED])
 def test_status_text_covers_all_states(status: str) -> None:
     from goofishpostman.qrlogin import STATUS_TEXT
 

@@ -339,16 +339,16 @@ class Goofish:
         if not retrying and result.get('ret') and '令牌过期' in result['ret'][0]:
             # 服务端说 token 过期时会顺手下发新的 _m_h5_tk，带新 token 重试一次即可。
             # 只重试一次：一直回"令牌过期"说明登录态本身已经废了，继续递归只会变成 RecursionError
-            return self._call_mtop(spec, data, retrying=True)
+            return self._call_mtop(spec=spec, data=data, retrying=True)
         return result
 
     def get_default_location(self) -> dict[str, Any]:
         return self._call_mtop(
-            api('default_location'), {'longitude': 118.78248347393424, 'latitude': 31.91629189813543}
+            spec=api('default_location'), data={'longitude': 118.78248347393424, 'latitude': 31.91629189813543}
         )
 
     def get_item_info(self, item_id: str) -> dict[str, Any]:
-        return self._call_mtop(api('item_detail'), {'itemId': item_id})
+        return self._call_mtop(spec=api('item_detail'), data={'itemId': item_id})
 
     def get_publish_channel(self, title: str, images_info: list[ImageInfo]) -> dict[str, Any]:
         data = {
@@ -361,14 +361,14 @@ class Goofish:
             'imageInfos': [image.to_image_info_do() for image in images_info],
             'uniqueCode': '1775905618164677',
         }
-        return self._call_mtop(api('publish_channel'), data)
+        return self._call_mtop(spec=api('publish_channel'), data=data)
 
     def get_token(self) -> dict[str, Any]:
         # 注意：这里的 appKey 是长连接的 app-key，不是 mtop 的 appKey
-        return self._call_mtop(api('get_token'), {'appKey': APP_KEY, 'deviceId': self.device_id})
+        return self._call_mtop(spec=api('get_token'), data={'appKey': APP_KEY, 'deviceId': self.device_id})
 
     def refresh_token(self) -> dict[str, Any]:
-        return self._call_mtop(api('refresh_token'), {})
+        return self._call_mtop(spec=api('refresh_token'), data={})
 
     def publish(
         self, images_path: list[str], goods_desc: str, price: Price | None = None, delivery: Delivery | None = None
@@ -402,7 +402,7 @@ class Goofish:
         if delivery.self_pickup_accepted:
             data['onlyTakeSelf'] = True
 
-        channel_res = self.get_publish_channel(goods_desc, images_info)
+        channel_res = self.get_publish_channel(title=goods_desc, images_info=images_info)
         for card in channel_res['data']['cardList']:
             card_data = card['cardData']
             for card_value in card_data.get('valuesList', []):
@@ -449,13 +449,13 @@ class Goofish:
             'prov': location['prov'],
         }
 
-        return self._call_mtop(api('publish'), data)
+        return self._call_mtop(spec=api('publish'), data=data)
 
     def upload_media(self, media_path: str) -> dict[str, Any]:
         # requests 用 multipart 时会自己生成 Content-Type，这里显式去掉模板里的表单类型
         headers = {key: value for key, value in _MTOP_BASE_HEADERS.items() if key != 'Content-Type'} | {'Accept': '*/*'}
         params = {'floderId': '0', 'appkey': 'xy_chat', '_input_charset': 'utf-8'}
-        with open(media_path, 'rb') as f:
+        with open(file=media_path, mode='rb') as f:
             files = {'file': (Path(media_path).name, f, 'image/png')}
             return self.session.post(url=self.upload_media_url, headers=headers, files=files, params=params).json()
 

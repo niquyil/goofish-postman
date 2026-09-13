@@ -60,12 +60,12 @@ from fixtures import (
 def test_generate_mid_shape() -> None:
     """3 位随机数 + 13 位毫秒时间戳 + ' 0'（与 goofish.js 一致）。"""
     for _ in range(5):
-        assert fullmatch(r'\d{1,3}\d{13} 0', generate_mid())
+        assert fullmatch(pattern=r'\d{1,3}\d{13} 0', string=generate_mid())
 
 
 def test_generate_uuid_shape() -> None:
     for _ in range(5):
-        assert fullmatch(r'-\d{13}1', generate_uuid())
+        assert fullmatch(pattern=r'-\d{13}1', string=generate_uuid())
 
 
 def test_generate_mid_is_unique_enough() -> None:
@@ -81,7 +81,7 @@ def test_device_id_is_uuid_v4_shaped_with_user_id() -> None:
     assert body[14] == '4'
     assert [body[i] for i in (8, 13, 18, 23)] == ['-'] * 4
     assert value.endswith('-13993122')
-    assert fullmatch(r'[0-9A-Za-z-]{36}', body)
+    assert fullmatch(pattern=r'[0-9A-Za-z-]{36}', string=body)
 
 
 def test_device_id_without_user_id() -> None:
@@ -102,8 +102,8 @@ def test_device_id_variant_bit() -> None:
 
 # ── generate_sign ────────────────────────────────────────────────────────────
 @mark.parametrize(
-    ('timestamp', 'token', 'data'),
-    [('1700000000000', 'TOKEN', '{"itemId":"123"}'), ('1789141514667', 'abc', '{}'), ('1', '', 'x')],
+    argnames=('timestamp', 'token', 'data'),
+    argvalues=[('1700000000000', 'TOKEN', '{"itemId":"123"}'), ('1789141514667', 'abc', '{}'), ('1', '', 'x')],
 )
 def test_sign_matches_manual_md5(timestamp: str, token: str, data: str) -> None:
     expected = md5(f'{token}&{timestamp}&{MTOP_APP_KEY}&{data}'.encode()).hexdigest()
@@ -251,7 +251,7 @@ def test_extract_message_time_reads_nested_push_body() -> None:
     """
     info = extract_message_info(push_frame(encrypted_record()))
     # 报文里是毫秒时间戳，展示时换成本地时区，格式固定 MM-DD HH:MM:SS
-    assert fullmatch(r'\d{2}-\d{2} \d{2}:\d{2}:\d{2}', extract_message_time(info['raw']))
+    assert fullmatch(pattern=r'\d{2}-\d{2} \d{2}:\d{2}:\d{2}', string=extract_message_time(info['raw']))
 
 
 def test_extract_message_time_is_empty_for_non_message_payload() -> None:
@@ -297,7 +297,9 @@ def text_of(content: dict, reminder: str = '') -> str:
     """走真实链路：把正文包成推送 payload → 解析 → 取可读文案。"""
     from goofishpostman.goofish_live import extract_message_text
 
-    info = extract_message_info(push_frame(encrypted_record(push_payload_with_content(content, reminder))))
+    info = extract_message_info(
+        push_frame(encrypted_record(push_payload_with_content(content=content, reminder_content=reminder)))
+    )
     return extract_message_text(info)
 
 
@@ -446,7 +448,7 @@ def test_duration_is_converted_to_milliseconds() -> None:
 
 
 def mp4_box(kind: bytes, payload: bytes) -> bytes:
-    return (len(payload) + 8).to_bytes(4, 'big') + kind + payload
+    return (len(payload) + 8).to_bytes(length=4, byteorder='big') + kind + payload
 
 
 def mp4_with_duration(duration: int, timescale: int = 1000, version: int = 0) -> bytes:
@@ -454,19 +456,19 @@ def mp4_with_duration(duration: int, timescale: int = 1000, version: int = 0) ->
     if version == 1:
         payload = (
             bytes([1, 0, 0, 0])
-            + (0).to_bytes(8, 'big') * 2
-            + timescale.to_bytes(4, 'big')
-            + duration.to_bytes(8, 'big')
+            + (0).to_bytes(length=8, byteorder='big') * 2
+            + timescale.to_bytes(length=4, byteorder='big')
+            + duration.to_bytes(length=8, byteorder='big')
         )
     else:
         payload = (
             bytes([0, 0, 0, 0])
-            + (0).to_bytes(4, 'big') * 2
-            + timescale.to_bytes(4, 'big')
-            + duration.to_bytes(4, 'big')
+            + (0).to_bytes(length=4, byteorder='big') * 2
+            + timescale.to_bytes(length=4, byteorder='big')
+            + duration.to_bytes(length=4, byteorder='big')
         )
-    ftyp = mp4_box(b'ftyp', b'isom' + (512).to_bytes(4, 'big') + b'isomiso2mp41')
-    return ftyp + mp4_box(b'moov', mp4_box(b'mvhd', payload))
+    ftyp = mp4_box(kind=b'ftyp', payload=b'isom' + (512).to_bytes(length=4, byteorder='big') + b'isomiso2mp41')
+    return ftyp + mp4_box(kind=b'moov', payload=mp4_box(kind=b'mvhd', payload=payload))
 
 
 def test_mp4_duration_is_read_from_the_file() -> None:
@@ -480,7 +482,7 @@ def test_mp4_duration_is_read_from_the_file() -> None:
     # 64 位时长的 mvhd（timescale=90000，1747080/90000 = 19.412 秒）
     assert extract_mp4_duration_ms(mp4_with_duration(1747080, timescale=90000, version=1)) == 19412
     # moov 在 mdat 之后的情形（非 faststart 的 mp4 很常见）
-    mdat = mp4_box(b'mdat', b'\x00' * 32)
+    mdat = mp4_box(kind=b'mdat', payload=b'\x00' * 32)
     assert extract_mp4_duration_ms(mdat + mp4_with_duration(5000)) == 5000
 
 
@@ -490,7 +492,10 @@ def test_mp4_duration_falls_back_to_zero() -> None:
 
     assert extract_mp4_duration_ms(b'') == 0
     assert extract_mp4_duration_ms(b'not a video at all') == 0
-    assert extract_mp4_duration_ms(mp4_box(b'ftyp', b'isom') + mp4_box(b'moov', b'\x00' * 8)) == 0
+    assert (
+        extract_mp4_duration_ms(mp4_box(kind=b'ftyp', payload=b'isom') + mp4_box(kind=b'moov', payload=b'\x00' * 8))
+        == 0
+    )
     assert extract_mp4_duration_ms(mp4_with_duration(19412, timescale=0)) == 0  # timescale 为 0 没法算
 
 

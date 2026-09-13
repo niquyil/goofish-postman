@@ -185,7 +185,7 @@ class FeishuNotifier:
 
     async def send(self, message: str) -> None:
         """纯文本推送（告警等不需要卡片格式的场景）。"""
-        await self._send_message('text', content_json(build_text_message(message)))
+        await self._send_message(msg_type='text', content=content_json(build_text_message(message)))
 
     async def send_card(
         self,
@@ -207,20 +207,20 @@ class FeishuNotifier:
 
         返回卡片那条消息的 id（回复功能要拿它当索引），没发出去时是空串。
         """
-        body = await self._inline_images(content, images)
+        body = await self._inline_images(content=content, images=images)
         uploaded = await self._prepare_media(media) if media else None
         if uploaded and media:
-            body = self._strip_inlined_media(body, media, keep_label=uploaded['kind'] == 'audio')
+            body = self._strip_inlined_media(content=body, media=media, keep_label=uploaded['kind'] == 'audio')
         video = uploaded if uploaded and uploaded['kind'] == 'video' else None
         message_id = await self._send_message(
-            'interactive',
-            content_json(build_card(title=title, content=body, details=details, color=color, video=video)),
+            msg_type='interactive',
+            content=content_json(build_card(title=title, content=body, details=details, color=color, video=video)),
         )
         if uploaded and uploaded['kind'] == 'audio':
             payload = {'file_key': uploaded['file_key']}
             if uploaded['duration']:
                 payload['duration'] = uploaded['duration']
-            await self._send_message('audio', content_json(payload))
+            await self._send_message(msg_type='audio', content=content_json(payload))
         return message_id
 
     def _strip_inlined_media(self, content: str, media: MessageMedia, *, keep_label: bool) -> str:
@@ -228,7 +228,7 @@ class FeishuNotifier:
         dropped = {media['url']}
         if not keep_label:
             dropped.add(f'[{CONTENT_TYPE_LABELS[4 if media["kind"] == "video" else 3]}]')
-        return '\n'.join(part for part in drop_lines(content, dropped).splitlines() if part)
+        return '\n'.join(part for part in drop_lines(text=content, values=dropped).splitlines() if part)
 
     async def _prepare_media(self, media: MessageMedia) -> dict | None:
         """下载并上传视频 / 语音，返回 {'kind', 'file_key', 'duration', 'img_key'}。
@@ -245,7 +245,7 @@ class FeishuNotifier:
             return None
         duration = to_milliseconds(media['duration'])
         if media['kind'] == 'audio':
-            data = await self._as_opus(data, media['url'])
+            data = await self._as_opus(data=data, url=media['url'])
             if data is None:
                 return None
             file_type, file_name = 'opus', _MEDIA_FILENAMES['audio']
@@ -424,7 +424,7 @@ class FeishuNotifier:
         if not markdown:
             return content
         # 内嵌成功的图片，连同正文里那句 `[图片]` 标注一起去掉：图片就在眼前，不用再标一遍
-        head = drop_lines(content, replaced | _IMAGE_LABEL_LINES)
+        head = drop_lines(text=content, values=replaced | _IMAGE_LABEL_LINES)
         return '\n'.join(part for part in [head, *markdown] if part)
 
     async def resolve_image_key(self, url: str) -> str | None:

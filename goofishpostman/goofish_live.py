@@ -71,7 +71,7 @@ def describe_token_failure(result: object) -> str:
             ret = str(values[0]).strip()
     if not ret:
         return '服务端没有返回 accessToken'
-    return ret.split('::', 1)[1].strip() if '::' in ret else ret
+    return ret.split(sep='::', maxsplit=1)[1].strip() if '::' in ret else ret
 
 
 def build_ack(message: dict) -> dict:
@@ -109,7 +109,7 @@ class GoofishLive:
         self.base_url = base_url
         self.cookies = Cookies.from_str(cookies_str)
         self.myid = self.cookies['unb']
-        self.username = self.cookies.get('tracknick', '')
+        self.username = self.cookies.get(name='tracknick', default='')
         self.device_id = generate_device_id(self.myid)
         self.goofish = Goofish(cookies=self.cookies, device_id=self.device_id)
         # 握手完成（/reg 成功）时回调，让上层能立刻把账号标成「监听中」（Supervisor 会赋值）。
@@ -290,7 +290,7 @@ class GoofishLive:
                 async for raw_message in websocket:
                     message = loads(raw_message)
                     await websocket.send(dumps(build_ack(message)))
-                    await self.dispatch_message(message, websocket)
+                    await self.dispatch_message(message=message, websocket=websocket)
             finally:
                 self.websocket = None
 
@@ -339,7 +339,7 @@ class GoofishLive:
         if self._pending_sync_mid and headers.get('mid') == self._pending_sync_mid:
             self._pending_sync_mid = None
             if isinstance(body, dict) and message.get('code') == 200:
-                await self.acknowledge_state(websocket, body)
+                await self.acknowledge_state(websocket=websocket, state=body)
             else:
                 logger.warning(f'[{self.username}] 同步状态响应异常: code={message.get("code")} body={str(body)[:200]}')
             return

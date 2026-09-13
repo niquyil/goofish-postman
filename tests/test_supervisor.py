@@ -19,7 +19,7 @@ def make_supervisor(tmp_dir, *, enabled: bool = True) -> tuple[Supervisor, Store
     store = Store(tmp_dir / 'a.json')
     store.add(name='主力号', cookie=GOOD_COOKIE, enabled=enabled)
     notifier = RecordingNotifier()
-    supervisor = Supervisor(store, notifier)
+    supervisor = Supervisor(store=store, notifier=notifier)
     supervisor.live_factory = FakeLive
     return supervisor, store, notifier
 
@@ -183,7 +183,7 @@ def test_account_with_incomplete_cookie_fails_without_retry(tmp_dir) -> None:
     async def run_scenario() -> None:
         store = Store(tmp_dir / 'a.json')
         account = store.add(name='残缺', cookie='tracknick=x', enabled=True)
-        supervisor = Supervisor(store, RecordingNotifier())
+        supervisor = Supervisor(store=store, notifier=RecordingNotifier())
         supervisor.start(account)
 
         runtime = supervisor.runtimes[account.id]
@@ -342,7 +342,7 @@ def test_message_buffer_is_capped(tmp_dir) -> None:
     run(run_scenario())
 
 
-@mark.parametrize('field', ['unb', 'tracknick', '_m_h5_tk'])
+@mark.parametrize(argnames='field', argvalues=['unb', 'tracknick', '_m_h5_tk'])
 def test_cookie_key_check_is_reported(tmp_dir, field: str) -> None:
     cookie = '; '.join(f'{key}=v' for key in ('unb', 'tracknick', '_m_h5_tk') if key != field)
     store = Store(tmp_dir / f'{field}.json')

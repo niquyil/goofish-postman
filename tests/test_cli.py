@@ -29,15 +29,15 @@ def test_removed_run_subcommand_says_so(capsys) -> None:
 
 def test_console_url_uses_loopback_for_wildcard_hosts() -> None:
     """监听 0.0.0.0 时浏览器打不开，要换成回环地址。"""
-    assert console_url('0.0.0.0', 8848) == 'http://127.0.0.1:8848'
-    assert console_url('', 8848) == 'http://127.0.0.1:8848'
-    assert console_url('192.168.1.5', 8080) == 'http://192.168.1.5:8080'
+    assert console_url(host='0.0.0.0', port=8848) == 'http://127.0.0.1:8848'
+    assert console_url(host='', port=8848) == 'http://127.0.0.1:8848'
+    assert console_url(host='192.168.1.5', port=8080) == 'http://192.168.1.5:8080'
 
 
 def test_console_is_opened_once_the_server_is_ready(monkeypatch) -> None:
     """管理界面监听成功后自动打开浏览器（地址就是 serve 回报的那个）。"""
     opened: list[str] = []
-    monkeypatch.setattr('goofishpostman.__main__.open_browser', lambda url: opened.append(url) or True)
+    monkeypatch.setattr(target='goofishpostman.__main__.open_browser', name=lambda url: opened.append(url) or True)
 
     async def flow() -> None:
         ready = get_running_loop().create_future()

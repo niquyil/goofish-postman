@@ -50,7 +50,7 @@ def make_supervisor(tmp_dir) -> tuple[Supervisor, RecordingNotifier]:
     store = Store(tmp_dir / 'accounts.json')
     store.add(name='主力号', cookie=RECEIVER_COOKIE, enabled=True)
     notifier = RecordingNotifier()
-    supervisor = Supervisor(store, notifier)
+    supervisor = Supervisor(store=store, notifier=notifier)
     supervisor.live_factory = IdleLive
     return supervisor, notifier
 
@@ -77,7 +77,7 @@ def _parse(frame: dict):
 
 def test_real_message_is_forwarded(tmp_dir, stub_decrypt) -> None:
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record()))
+    replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
     assert len(notifier.sent) == 1
     # 文案：发送方昵称 → 接收方「昵称(账号)」，不带【】前缀
     assert notifier.sent[0] == f'一站式学习助手 → {ACCOUNT_LABEL}\n有吗'
@@ -88,7 +88,7 @@ def test_duplicate_frames_are_forwarded_once(tmp_dir, stub_decrypt) -> None:
     """同一条私信会随多个帧重复下发（实测抓到 6 次），只能推一次。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     for _ in range(6):
-        replay(supervisor, push_frame(encrypted_record()))
+        replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
     assert len(notifier.sent) == 1
     # 网页消息流也只应有一条
     assert len(supervisor.messages) == 1
@@ -105,7 +105,7 @@ def test_arouse_records_are_never_forwarded(tmp_dir, stub_decrypt) -> None:
     live = GoofishLive(RECEIVER_COOKIE)
 
     async def run_scenario() -> None:
-        await live.dispatch_message(push_frame(plain_record(AROUSE_PAYLOAD)), None)
+        await live.dispatch_message(message=push_frame(plain_record(AROUSE_PAYLOAD)), websocket=None)
 
     run(run_scenario())
     assert notifier.sent == []
@@ -115,7 +115,10 @@ def test_arouse_records_are_never_forwarded(tmp_dir, stub_decrypt) -> None:
 def test_mixed_batch_forwards_only_the_message(tmp_dir, stub_decrypt) -> None:
     """真实批次里预热+私信混在一起，只转发私信。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(plain_record(AROUSE_PAYLOAD), encrypted_record(), plain_record(AROUSE_PAYLOAD)))
+    replay(
+        supervisor=supervisor,
+        frame=push_frame(plain_record(AROUSE_PAYLOAD), encrypted_record(), plain_record(AROUSE_PAYLOAD)),
+    )
     assert len(notifier.sent) == 1
     assert '有吗' in notifier.sent[0]
 
@@ -123,7 +126,7 @@ def test_mixed_batch_forwards_only_the_message(tmp_dir, stub_decrypt) -> None:
 def test_forwarded_card_carries_message_details(tmp_dir, stub_decrypt) -> None:
     """飞书卡片的明细只要时间和商品名（其余字段别塞进去，免得抢正文的注意力）。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record()))
+    replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
 
     card = notifier.card_payloads[0]
     assert card['title'] == f'一站式学习助手 → {ACCOUNT_LABEL}'
@@ -136,8 +139,8 @@ def test_forwarded_card_carries_message_details(tmp_dir, stub_decrypt) -> None:
 def test_learned_item_title_appears_on_the_card(tmp_dir, stub_decrypt) -> None:
     """会话预热记录学到商品标题后，该会话的私信卡片要带上「商品」（时间在前）。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    supervisor._remember_session_title(SESSION_ID, '上海迪士尼玲娜贝儿钱包')
-    replay(supervisor, push_frame(encrypted_record()))
+    supervisor._remember_session_title(session_id=SESSION_ID, title='上海迪士尼玲娜贝儿钱包')
+    replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
     details = notifier.card_payloads[0]['details']
     assert list(details) == ['时间', '商品']
     assert details['商品'] == '上海迪士尼玲娜贝儿钱包'
@@ -146,8 +149,8 @@ def test_learned_item_title_appears_on_the_card(tmp_dir, stub_decrypt) -> None:
 def test_long_item_title_is_truncated(tmp_dir, stub_decrypt) -> None:
     """商品标题很长时截断，别让明细行挤爆卡片。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    supervisor._remember_session_title(SESSION_ID, '长' * 50)
-    replay(supervisor, push_frame(encrypted_record()))
+    supervisor._remember_session_title(session_id=SESSION_ID, title='长' * 50)
+    replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
     assert notifier.card_payloads[0]['details']['商品'] == f'{"长" * 30}…'
 
 
@@ -157,7 +160,7 @@ def test_session_title_cache_is_bounded(tmp_dir) -> None:
 
     supervisor, _ = make_supervisor(tmp_dir)
     for index in range(_MAX_SESSION_TITLES + 20):
-        supervisor._remember_session_title(f'sid-{index}', f'标题{index}')
+        supervisor._remember_session_title(session_id=f'sid-{index}', title=f'标题{index}')
     assert len(supervisor._session_titles) == _MAX_SESSION_TITLES
 
 
@@ -165,8 +168,14 @@ def test_platform_tip_is_recorded_but_not_pushed(tmp_dir, stub_decrypt) -> None:
     """平台提示条（contentType=14）不推飞书，但网页消息流要留痕，方便回查。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
-        supervisor,
-        push_frame(encrypted_record(push_payload_with_content(TIP_CONTENT, '想要卖家更快回复？', message_id='tip-1'))),
+        supervisor=supervisor,
+        frame=push_frame(
+            encrypted_record(
+                push_payload_with_content(
+                    content=TIP_CONTENT, reminder_content='想要卖家更快回复？', message_id='tip-1'
+                )
+            )
+        ),
     )
 
     assert notifier.sent == []  # 没往飞书推
@@ -176,7 +185,10 @@ def test_platform_tip_is_recorded_but_not_pushed(tmp_dir, stub_decrypt) -> None:
 def test_image_message_is_forwarded_with_its_url(tmp_dir, stub_decrypt) -> None:
     """非文本消息也要转发，并且把图片地址带出去（网页消息流与卡片正文同一份文案）。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record(push_payload_with_content(IMAGE_CONTENT, '[图片]'))))
+    replay(
+        supervisor=supervisor,
+        frame=push_frame(encrypted_record(push_payload_with_content(content=IMAGE_CONTENT, reminder_content='[图片]'))),
+    )
 
     card = notifier.card_payloads[0]
     assert card['content'] == f'[图片]\n{IMAGE_URL}'
@@ -187,8 +199,8 @@ def test_kept_trade_card_is_forwarded_with_its_text(tmp_dir, stub_decrypt) -> No
     """放行的交易卡片（买家付款）要给标题与说明，而不是只转发报文里那句提醒。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
-        supervisor,
-        push_frame(
+        supervisor=supervisor,
+        frame=push_frame(
             encrypted_record(
                 push_payload_with_content(
                     content=KEPT_TRADE_CARD_CONTENT, reminder_content='[交易消息]', message_id='keep-1'
@@ -206,8 +218,8 @@ def test_other_trade_cards_are_recorded_but_not_pushed(tmp_dir, stub_decrypt) ->
     """其余交易卡片（改价、评价提醒、地址修改……）只在网页留痕，不推飞书。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
-        supervisor,
-        push_frame(
+        supervisor=supervisor,
+        frame=push_frame(
             encrypted_record(
                 push_payload_with_content(
                     content=TRADE_CARD_CONTENT, reminder_content='[交易消息]', message_id='silent-1'
@@ -224,8 +236,8 @@ def test_video_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
     """视频消息要把媒体信息（地址/封面/时长）一并交给推送器去上传。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
-        supervisor,
-        push_frame(
+        supervisor=supervisor,
+        frame=push_frame(
             encrypted_record(
                 push_payload_with_content(content=VIDEO_CONTENT, reminder_content='[视频]', message_id='video-1')
             )
@@ -242,8 +254,8 @@ def test_audio_message_is_forwarded_with_media(tmp_dir, stub_decrypt) -> None:
     """语音消息同理（时长按秒给到卡片上做人读的说明）。"""
     supervisor, notifier = make_supervisor(tmp_dir)
     replay(
-        supervisor,
-        push_frame(
+        supervisor=supervisor,
+        frame=push_frame(
             encrypted_record(
                 push_payload_with_content(content=AUDIO_CONTENT, reminder_content='[语音]', message_id='audio-1')
             )
@@ -275,14 +287,14 @@ def test_feishu_reply_is_sent_to_the_linked_conversation(tmp_dir, stub_decrypt) 
     日志/事件流里再多带一句回复内容。
     """
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record()))
+    replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
     assert notifier.card_payloads, '应该先推出一张卡片'
 
     account = supervisor.store.list_accounts()[0]
     live = ReplyLive()
     supervisor._lives[account.id] = live
 
-    run(supervisor.forward_feishu_reply('om-1', '有货的，可以直接拍'))
+    run(supervisor.forward_feishu_reply(feishu_message_id='om-1', text='有货的，可以直接拍'))
 
     # 发送方：报文里学到的昵称 + Web 端账号卡片上的名字（备注名，不是数字账号）
     summary = '已通过网课学习私人助理（主力号）向一站式学习助手回复'
@@ -324,9 +336,9 @@ def test_ignored_feishu_event_shows_up_in_the_event_log(tmp_dir, stub_decrypt) -
 def test_reply_while_account_not_running_is_reported(tmp_dir, stub_decrypt) -> None:
     """账号没在监听时不硬发，说明原因。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record()))
+    replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
     supervisor._lives.clear()
-    run(supervisor.forward_feishu_reply('om-1', '在吗'))
+    run(supervisor.forward_feishu_reply(feishu_message_id='om-1', text='在吗'))
 
     assert '该账号当前未处于监听状态' in notifier.replies[0][1]
     assert any(event.level == 'warning' for event in supervisor.events)
@@ -335,13 +347,13 @@ def test_reply_while_account_not_running_is_reported(tmp_dir, stub_decrypt) -> N
 def test_reply_failure_is_reported_to_the_user(tmp_dir, stub_decrypt) -> None:
     """发闲鱼失败也要说清楚，不能静默。"""
     supervisor, notifier = make_supervisor(tmp_dir)
-    replay(supervisor, push_frame(encrypted_record()))
+    replay(supervisor=supervisor, frame=push_frame(encrypted_record()))
     account = supervisor.store.list_accounts()[0]
     live = ReplyLive()
     live.fail_with = RuntimeError('连接已断开')
     supervisor._lives[account.id] = live
 
-    run(supervisor.forward_feishu_reply('om-1', '在吗'))
+    run(supervisor.forward_feishu_reply(feishu_message_id='om-1', text='在吗'))
 
     assert notifier.replies[0][1].startswith('已通过网课学习私人助理（主力号）向一站式学习助手回复失败')
     assert '连接已断开' in notifier.replies[0][1]
@@ -360,7 +372,7 @@ def test_reply_peer_name_falls_back_to_learned_and_card(tmp_dir, stub_decrypt) -
         return await supervisor._describe_reply(account=account, link=link, feishu_message_id='om-card-1')
 
     # 1) 报文里学到的（每张卡片发出时都会记）
-    supervisor._remember_peer_name('62367910600', '买家小王')
+    supervisor._remember_peer_name(cid='62367910600', peer_name='买家小王')
     assert run(describe()) == '已通过网课学习私人助理（主力号）向买家小王回复'
 
     # 2) 升级前的老卡片：读回卡片标题解析（需要 im:message:readonly 权限）
@@ -393,7 +405,7 @@ def test_dedup_cache_is_bounded(tmp_dir) -> None:
 
     supervisor, _ = make_supervisor(tmp_dir)
     for index in range(_MAX_SEEN_MESSAGES + 50):
-        assert supervisor._is_duplicate('acct', f'id-{index}') is False
+        assert supervisor._is_duplicate(account_id='acct', uid=f'id-{index}') is False
     assert len(supervisor._seen_messages['acct']) == _MAX_SEEN_MESSAGES
     # 最早的那些已经被挤出，不再算重复
-    assert supervisor._is_duplicate('acct', 'id-0') is False
+    assert supervisor._is_duplicate(account_id='acct', uid='id-0') is False

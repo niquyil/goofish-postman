@@ -261,11 +261,11 @@ class Store:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             payload = dumps(self.data.model_dump(mode='json'), ensure_ascii=False, indent=2)
             tmp = self.path.with_suffix(f'{self.path.suffix}.tmp')
-            with open(tmp, 'w', encoding='utf-8') as f:
+            with open(file=tmp, mode='w', encoding='utf-8') as f:
                 f.write(payload)
             if os_name == 'posix':
-                chmod(tmp, 0o600)
-            replace(tmp, self.path)
+                chmod(path=tmp, mode=0o600)
+            replace(src=tmp, dst=self.path)
 
     # ── 账号 ──────────────────────────────────────────────────────────────────
     def list_accounts(self) -> list[Account]:

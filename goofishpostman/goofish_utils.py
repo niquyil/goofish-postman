@@ -38,7 +38,7 @@ DEVICE_ID_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv
 
 def generate_mid() -> str:
     """消息 id：3 位随机数 + 13 位毫秒时间戳 + ' 0'。"""
-    return f'{randint(0, 999)}{int(datetime.now(UTC).timestamp() * 1000)} 0'
+    return f'{randint(a=0, b=999)}{int(datetime.now(UTC).timestamp() * 1000)} 0'
 
 
 def generate_uuid() -> str:
@@ -60,7 +60,7 @@ def generate_device_id(user_id: str | None = None) -> str:
         elif index == 14:
             chars.append('4')
         else:
-            nibble = randint(0, 15)
+            nibble = randint(a=0, b=15)
             chars.append(DEVICE_ID_ALPHABET[(3 & nibble) | 8 if index == 19 else nibble])
     return ''.join(chars) + '-' + (user_id or '')
 
@@ -303,10 +303,10 @@ def _walk_dicts(value: Any, depth: int = 0) -> Iterator[dict]:
     if isinstance(value, dict):
         yield value
         for item in value.values():
-            yield from _walk_dicts(item, depth + 1)
+            yield from _walk_dicts(value=item, depth=depth + 1)
     elif isinstance(value, list):
         for item in value:
-            yield from _walk_dicts(item, depth + 1)
+            yield from _walk_dicts(value=item, depth=depth + 1)
 
 
 # extract_message_uid 里优先查看的 JSON 字符串字段（普通私信看 bizTag，卡片消息看 extJson）
@@ -499,7 +499,9 @@ TRADE_CARD_CONTENT_TYPE = 26
 _HTML_TAG = compile_pattern(r'<[^>]+>')
 # 卡片文本里的链接：<a size=13 href="fleamarket://..." target="_blank">查看详情</a>
 # href 可能不带引号，也可能只有 data-intent（没有 href，这种就只留文字）
-_HTML_LINK = compile_pattern(r'<a\b[^>]*?href=["\']?([^"\'\s>]+)["\']?[^>]*>(.*?)</a>', DOTALL | IGNORECASE)
+_HTML_LINK = compile_pattern(
+    pattern=r'<a\b[^>]*?href=["\']?([^"\'\s>]+)["\']?[^>]*>(.*?)</a>', flags=DOTALL | IGNORECASE
+)
 
 
 def extract_message_content(payload: dict) -> dict | None:
@@ -551,7 +553,7 @@ def describe_message_content(content: dict) -> MessageContent | None:
             tip = _strip_html(_as_text((content.get('tip') or {}).get('tip')))
             return MessageContent(label=_label_of(kind), lines=[tip] if tip else [], links=[])
         case 25 | 26:
-            return _describe_trade_card(content, kind)
+            return _describe_trade_card(content=content, kind=kind)
         case _:
             return None
 
@@ -633,8 +635,8 @@ def extract_mp4_duration_ms(data: bytes) -> int:
         timescale_at, duration_at, duration_size = start + 4 + 8, start + 4 + 12, 4
     if duration_at + duration_size > end:
         return 0
-    timescale = int.from_bytes(data[timescale_at : timescale_at + 4], 'big')
-    duration = int.from_bytes(data[duration_at : duration_at + duration_size], 'big')
+    timescale = int.from_bytes(bytes=data[timescale_at : timescale_at + 4], byteorder='big')
+    duration = int.from_bytes(bytes=data[duration_at : duration_at + duration_size], byteorder='big')
     if not timescale:
         return 0
     return round(duration / timescale * 1000)
@@ -644,13 +646,13 @@ def _find_box(data: bytes, start: int, end: int, wanted: bytes) -> tuple[int, in
     """在 [start, end) 这一段里找指定类型的 box，返回它内容的起止位置。"""
     offset = start
     while offset + 8 <= end:
-        size = int.from_bytes(data[offset : offset + 4], 'big')
+        size = int.from_bytes(bytes=data[offset : offset + 4], byteorder='big')
         kind = data[offset + 4 : offset + 8]
         header = 8
         if size == 1:  # 64 位长度
             if offset + 16 > end:
                 return None
-            size = int.from_bytes(data[offset + 8 : offset + 16], 'big')
+            size = int.from_bytes(bytes=data[offset + 8 : offset + 16], byteorder='big')
             header = 16
         elif size == 0:  # 一直到文件末尾
             size = end - offset
@@ -765,8 +767,10 @@ def _iter_buttons(ex_content: dict) -> Iterator[dict]:
 def _strip_html(value: str) -> str:
     """去掉卡片文本里的 HTML：`<a href="url">文字</a>` 转成「文字（url）」，其余标签直接删。"""
     unescaped = value.replace('&nbsp;', ' ')
-    with_links = _HTML_LINK.sub(lambda match: f'{_HTML_TAG.sub("", match.group(2))}（{match.group(1)}）', unescaped)
-    return unescape(_HTML_TAG.sub('', with_links)).strip()
+    with_links = _HTML_LINK.sub(
+        repl=lambda match: f'{_HTML_TAG.sub(repl="", string=match.group(2))}（{match.group(1)}）', string=unescaped
+    )
+    return unescape(_HTML_TAG.sub(repl='', string=with_links)).strip()
 
 
 def _as_text(value: Any) -> str:

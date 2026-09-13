@@ -84,7 +84,7 @@ def test_mtop_params_defaults() -> None:
     assert params['jsv'] == '2.7.2'
 
 
-@mark.parametrize('name', sorted(API))
+@mark.parametrize(argnames='name', argvalues=sorted(API))
 def test_api_spec_self_consistent(name: str) -> None:
     spec = API[name]
     assert spec.url.endswith(f'/{spec.version}/')
@@ -105,7 +105,7 @@ def test_timestamp_is_milliseconds(monkeypatch: MonkeyPatch) -> None:
 
     api = Goofish.__new__(Goofish)
     api.session = Session()
-    monkeypatch.setattr('goofishpostman.goofish_apis.time', lambda: 1700000000.0)
+    monkeypatch.setattr(target='goofishpostman.goofish_apis.time', name=lambda: 1700000000.0)
     api.get_default_location()
     assert captured['params']['t'] == '1700000000000'
 
@@ -199,8 +199,8 @@ def test_price_to_cents() -> None:
 
 
 @mark.parametrize(
-    ('method', 'expected'),
-    [
+    argnames=('method', 'expected'),
+    argvalues=[
         (DeliveryMethod.free_shipping, {'canFreeShipping': True, 'supportFreight': True, 'templateId': None}),
         (DeliveryMethod.by_distance, {'supportFreight': True, 'templateId': '-100'}),
         (DeliveryMethod.fixed_price, {'supportFreight': True, 'templateId': '0', 'postPriceInCent': '550'}),

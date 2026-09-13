@@ -49,7 +49,7 @@ def linkify_urls(text: str) -> str:
     网页消息流里同一份文案仍是纯文本，两边不会出现两种说法。
     已经是 markdown 链接/图片语法的部分原样保留，不重复包裹。
     """
-    return _TOKEN_PATTERN.sub(_to_markdown_link, text)
+    return _TOKEN_PATTERN.sub(repl=_to_markdown_link, string=text)
 
 
 def _to_markdown_link(match) -> str:

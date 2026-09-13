@@ -225,7 +225,7 @@ class Supervisor:
             await task
         except CancelledError:
             pass
-        self._set_status(runtime, 'stopped')
+        self._set_status(runtime=runtime, status='stopped')
         self.publish_event(level='info', account_id=account_id, message=f'{runtime.account.display_name} 已停止监听')
 
     async def stop_all(self) -> None:
@@ -245,7 +245,7 @@ class Supervisor:
                 live = self.live_factory(account.cookie)
             except KeyError as e:
                 # cookie 里缺 unb，重连也没用
-                self._fail(runtime, f'cookie 缺少 {e} 字段，请重新复制登录后的完整 cookie')
+                self._fail(runtime=runtime, message=f'cookie 缺少 {e} 字段，请重新复制登录后的完整 cookie')
                 return
 
             def publish_connected(_runtime: AccountRuntime = runtime) -> None:
@@ -315,7 +315,7 @@ class Supervisor:
                 # 发送方那一侧不该当成"收到消息"推给飞书
                 return
             uid = extract_message_uid(message['raw'])
-            if uid and self._is_duplicate(current.id, uid):
+            if uid and self._is_duplicate(account_id=current.id, uid=uid):
                 # 同一条私信会随多个帧重复下发，重复的只更新心跳、不再推送
                 runtime.last_message_at = datetime.now(UTC)
                 return
@@ -326,7 +326,7 @@ class Supervisor:
                 text=extract_message_text(message),
                 receiver=current.label,
             )
-            self._remember_peer_name(message['cid'], record.sender)
+            self._remember_peer_name(cid=message['cid'], peer_name=record.sender)
             runtime.message_count += 1
             runtime.last_message_at = record.at
             self._append(buffer=self.messages, item=record, limit=_MAX_MESSAGES)
@@ -389,7 +389,7 @@ class Supervisor:
             message = f'{summary}失败：该账号当前未处于监听状态'
             logger.warning(f'{message}（内容：{text}）')
             self.publish_event(level='warning', account_id=link.account_id, message=f'{message}（内容：{text}）')
-            await self.notifier.reply_message(answer_to, message)
+            await self.notifier.reply_message(message_id=answer_to, text=message)
             return
         try:
             await live.send_text_to_conversation(cid=link.cid, toid=link.toid, text=text)
@@ -397,12 +397,12 @@ class Supervisor:
             message = f'{summary}失败：{type(e).__name__}: {e}'
             logger.error(f'{message}（内容：{text}）')
             self.publish_event(level='error', account_id=link.account_id, message=f'{message}（内容：{text}）')
-            await self.notifier.reply_message(answer_to, message)
+            await self.notifier.reply_message(message_id=answer_to, text=message)
             return
         # 飞书里只给一句结果；日志/事件流里再带上回复内容，便于回查
         logger.info(f'{summary}：{text}')
         self.publish_event(level='info', account_id=link.account_id, message=f'{summary}：{text}')
-        await self.notifier.reply_message(answer_to, summary)
+        await self.notifier.reply_message(message_id=answer_to, text=summary)
 
     async def _describe_reply(self, account, link, feishu_message_id: str) -> str:
         """反馈文案：已通过<发送方昵称>（<发送方账号>）向<对方昵称>回复。
@@ -491,7 +491,7 @@ class Supervisor:
         # 只有当缓存的昵称确实"过时/不可信"或确实变化时才更新
         if target.nickname_override and target.nickname_override == sender_name:
             return
-        updated = self.store.set_nickname(target.id, sender_name)
+        updated = self.store.set_nickname(account_id=target.id, nickname=sender_name)
         if updated is None:
             return
         logger.info(f'{updated.display_name} 昵称更新为 {sender_name}')

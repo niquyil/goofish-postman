@@ -59,10 +59,10 @@ def make_harness(tmp_dir) -> Harness:
     store.add(name='kisuke', cookie=KISUKE_COOKIE, enabled=True)
     store.add(name=OTHER_NICK, cookie=OTHER_COOKIE, enabled=True)
     notifier = RecordingNotifier()
-    supervisor = Supervisor(store, notifier)
+    supervisor = Supervisor(store=store, notifier=notifier)
     supervisor.live_factory = IdleLive
     supervisor.sync_runtimes()
-    return Harness(supervisor, notifier)
+    return Harness(supervisor=supervisor, notifier=notifier)
 
 
 def make_message(sender_id: str, sender_name: str, text: str, uid: str) -> MessageInfo:
@@ -107,7 +107,9 @@ def test_sender_name_falls_back_to_build_account_map(tmp_dir) -> None:
 def test_message_without_sender_name_uses_mapping(tmp_dir) -> None:
     """报文没带发送方昵称时，用对照表按 id 反查出昵称。"""
     harness = make_harness(tmp_dir)
-    harness.deliver(harness.kisuke, make_message(sender_id=OTHER_UNB, sender_name='', text='你好', uid='m-map'))
+    harness.deliver(
+        account_id=harness.kisuke, message=make_message(sender_id=OTHER_UNB, sender_name='', text='你好', uid='m-map')
+    )
 
     assert [m.send_user_name for m in harness.supervisor.messages] == [OTHER_NICK]
     assert OTHER_NICK in harness.notifier.sent[0]
@@ -119,7 +121,7 @@ def test_own_message_is_not_forwarded(tmp_dir) -> None:
     harness = make_harness(tmp_dir)
     message = make_message(sender_id=KISUKE_UNB, sender_name=KISUKE_NICK, text='我发的', uid='m1')
 
-    harness.deliver(harness.kisuke, message)
+    harness.deliver(account_id=harness.kisuke, message=message)
 
     assert harness.notifier.sent == []
     assert harness.supervisor.messages == []
@@ -130,8 +132,8 @@ def test_own_message_reaches_the_other_account(tmp_dir) -> None:
     harness = make_harness(tmp_dir)
     message = make_message(sender_id=KISUKE_UNB, sender_name=KISUKE_NICK, text='大号发的消息', uid='m2')
 
-    harness.deliver(harness.kisuke, message)  # 发送方自己 → 不推
-    harness.deliver(harness.other, message)  # 接收方 → 推
+    harness.deliver(account_id=harness.kisuke, message=message)  # 发送方自己 → 不推
+    harness.deliver(account_id=harness.other, message=message)  # 接收方 → 推
 
     assert len(harness.notifier.sent) == 1
     assert OTHER_NICK in harness.notifier.sent[0]
@@ -143,7 +145,7 @@ def test_buyer_message_is_forwarded_by_the_receiving_account(tmp_dir) -> None:
     harness = make_harness(tmp_dir)
     message = make_message(sender_id='99999999', sender_name='买家小王', text='在吗', uid='m3')
 
-    harness.deliver(harness.other, message)
+    harness.deliver(account_id=harness.other, message=message)
 
     assert len(harness.notifier.sent) == 1
     assert '买家小王' in harness.notifier.sent[0]
@@ -165,7 +167,9 @@ def test_is_self_sent_prefers_account_id(tmp_dir) -> None:
 def test_message_without_sender_id_uses_nickname(tmp_dir) -> None:
     """报文缺 senderUserId 时，靠昵称仍能识别出是自己发的。"""
     harness = make_harness(tmp_dir)
-    harness.deliver(harness.kisuke, make_message(sender_id='', sender_name=KISUKE_NICK, text='我发的', uid='m4'))
+    harness.deliver(
+        account_id=harness.kisuke, message=make_message(sender_id='', sender_name=KISUKE_NICK, text='我发的', uid='m4')
+    )
     assert harness.notifier.sent == []
 
 
@@ -176,10 +180,10 @@ def test_dedup_is_per_account(tmp_dir) -> None:
     message = make_message(sender_id='99999999', sender_name='买家', text='买家消息', uid='m5')
 
     for _ in range(5):
-        harness.deliver(harness.kisuke, message)
+        harness.deliver(account_id=harness.kisuke, message=message)
     assert len(harness.notifier.sent) == 1
 
-    harness.deliver(harness.other, message)
+    harness.deliver(account_id=harness.other, message=message)
     assert len(harness.notifier.sent) == 2
 
 
@@ -188,8 +192,8 @@ def test_duplicate_without_id_is_not_deduped(tmp_dir) -> None:
     harness = make_harness(tmp_dir)
     message = make_message(sender_id='99999999', sender_name='买家', text='无 id', uid='')
     message['raw'] = {}
-    harness.deliver(harness.kisuke, message)
-    harness.deliver(harness.kisuke, message)
+    harness.deliver(account_id=harness.kisuke, message=message)
+    harness.deliver(account_id=harness.kisuke, message=message)
     assert len(harness.notifier.sent) == 2
 
 
@@ -198,9 +202,9 @@ def test_dedup_cache_is_bounded_per_account(tmp_dir) -> None:
 
     supervisor = make_harness(tmp_dir).supervisor
     for index in range(_MAX_SEEN_MESSAGES + 50):
-        assert supervisor._is_duplicate('acct', f'id-{index}') is False
+        assert supervisor._is_duplicate(account_id='acct', uid=f'id-{index}') is False
     assert len(supervisor._seen_messages['acct']) == _MAX_SEEN_MESSAGES
-    assert supervisor._is_duplicate('acct', 'id-0') is False
+    assert supervisor._is_duplicate(account_id='acct', uid='id-0') is False
 
 
 # ── 昵称：cookie 的 tracknick 可能是旧值，要从报文里学 ────────────────────────
@@ -216,10 +220,10 @@ def make_stale_harness(tmp_dir) -> Harness:
     store.add(name='kisuke', cookie=STALE_COOKIE, enabled=True)
     store.add(name=OTHER_NICK, cookie=OTHER_COOKIE, enabled=True)
     notifier = RecordingNotifier()
-    supervisor = Supervisor(store, notifier)
+    supervisor = Supervisor(store=store, notifier=notifier)
     supervisor.live_factory = IdleLive
     supervisor.sync_runtimes()
-    return Harness(supervisor, notifier)
+    return Harness(supervisor=supervisor, notifier=notifier)
 
 
 def test_real_nickname_is_learned_from_payload(tmp_dir) -> None:
@@ -228,7 +232,10 @@ def test_real_nickname_is_learned_from_payload(tmp_dir) -> None:
     assert harness.supervisor.store.list_accounts()[0].nickname == STALE_NICK
 
     # kisuke 发言：报文给出真实中文昵称
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='在吗', uid='nick-1'))
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='在吗', uid='nick-1'),
+    )
 
     updated = next(a for a in harness.supervisor.store.list_accounts() if a.unb == KISUKE_UNB)
     assert updated.nickname == REAL_NICK
@@ -241,9 +248,15 @@ def test_learned_nickname_is_used_for_receiver_display(tmp_dir) -> None:
     """学到之后，该账号出现在接收方位置也要显示真实昵称。"""
     harness = make_stale_harness(tmp_dir)
     # 先让 kisuke 的昵称被学到
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='在吗', uid='nick-2'))
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='在吗', uid='nick-2'),
+    )
     # 再由 OTHER 发消息给 kisuke，此时接收方是 kisuke，应显示中文昵称
-    harness.deliver(harness.kisuke, make_message(sender_id=OTHER_UNB, sender_name='小号', text='收到', uid='nick-3'))
+    harness.deliver(
+        account_id=harness.kisuke,
+        message=make_message(sender_id=OTHER_UNB, sender_name='小号', text='收到', uid='nick-3'),
+    )
 
     receiver = harness.supervisor.messages[-1].receiver
     assert receiver == f'{REAL_NICK}(kisuke)'
@@ -255,7 +268,8 @@ def test_nickname_learned_once(tmp_dir) -> None:
     harness = make_stale_harness(tmp_dir)
     for index in range(3):
         harness.deliver(
-            harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid=f'n-{index}')
+            account_id=harness.other,
+            message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid=f'n-{index}'),
         )
 
     learned_events = [e for e in harness.supervisor.events if '昵称更新' in e.message]
@@ -265,7 +279,10 @@ def test_nickname_learned_once(tmp_dir) -> None:
 def test_nickname_not_overwritten_by_numeric_id(tmp_dir) -> None:
     """报文昵称等于 id 时（没给出真名）不覆盖已有昵称。"""
     harness = make_stale_harness(tmp_dir)
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=KISUKE_UNB, text='hi', uid='n-num'))
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=KISUKE_UNB, text='hi', uid='n-num'),
+    )
     assert next(a for a in harness.supervisor.store.list_accounts() if a.unb == KISUKE_UNB).nickname == STALE_NICK
 
 
@@ -296,7 +313,10 @@ def test_label_uses_remark_name_not_numeric_id(tmp_dir) -> None:
 def test_nickname_cache_survives_restart(tmp_dir) -> None:
     """学到的昵称缓存在本地，重启后直接复用，不必再等对方发消息。"""
     harness = make_stale_harness(tmp_dir)
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='cache-1'))
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='cache-1'),
+    )
 
     reloaded = Store(harness.supervisor.store.path)
     cached = next(a for a in reloaded.list_accounts() if a.unb == KISUKE_UNB)
@@ -308,9 +328,13 @@ def test_nickname_cache_survives_restart(tmp_dir) -> None:
 def test_nickname_change_is_detected_and_cached(tmp_dir) -> None:
     """昵称变了要更新缓存（每次消息都检查）。"""
     harness = make_stale_harness(tmp_dir)
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='chg-1'))
     harness.deliver(
-        harness.other, make_message(sender_id=KISUKE_UNB, sender_name='改名后的昵称', text='hi', uid='chg-2')
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='chg-1'),
+    )
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name='改名后的昵称', text='hi', uid='chg-2'),
     )
 
     updated = next(a for a in Store(harness.supervisor.store.path).list_accounts() if a.unb == KISUKE_UNB)
@@ -320,13 +344,17 @@ def test_nickname_change_is_detected_and_cached(tmp_dir) -> None:
 def test_nickname_unchanged_does_not_rewrite(tmp_dir) -> None:
     """昵称没变就不落盘、不记事件。"""
     harness = make_stale_harness(tmp_dir)
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='same-1'))
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='same-1'),
+    )
     updated_at_first = next(a for a in harness.supervisor.store.list_accounts() if a.unb == KISUKE_UNB).updated_at
     events_after_first = len([e for e in harness.supervisor.events if '昵称更新' in e.message])
 
     for index in range(3):
         harness.deliver(
-            harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid=f'same-{index + 2}')
+            account_id=harness.other,
+            message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid=f'same-{index + 2}'),
         )
 
     account = next(a for a in harness.supervisor.store.list_accounts() if a.unb == KISUKE_UNB)
@@ -338,7 +366,10 @@ def test_reset_nickname_clears_cache(tmp_dir) -> None:
     """重置昵称后回到 cookie 值，下次消息再重新学。"""
     harness = make_stale_harness(tmp_dir)
     store = harness.supervisor.store
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='rst-1'))
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='rst-1'),
+    )
     assert next(a for a in store.list_accounts() if a.unb == KISUKE_UNB).nickname == REAL_NICK
 
     cleared = store.clear_nickname(harness.kisuke)
@@ -346,7 +377,10 @@ def test_reset_nickname_clears_cache(tmp_dir) -> None:
     assert cleared.nickname == STALE_NICK  # 回到 cookie 里的旧值
 
     # 再收到该账号的消息会重新学到
-    harness.deliver(harness.other, make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='rst-2'))
+    harness.deliver(
+        account_id=harness.other,
+        message=make_message(sender_id=KISUKE_UNB, sender_name=REAL_NICK, text='hi', uid='rst-2'),
+    )
     assert next(a for a in store.list_accounts() if a.unb == KISUKE_UNB).nickname == REAL_NICK
 
 

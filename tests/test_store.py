@@ -205,7 +205,7 @@ def test_notify_chat_cache_is_bounded_and_app_id_change_clears_it(tmp_dir) -> No
 def test_format_direction_carries_sender_and_receiver() -> None:
     """卡片标题的文案：发送方 → 接收方，不带【】前缀。"""
     info = {'send_user_name': '买家小王', 'send_message': '在吗'}
-    title = format_direction('小号(xy773249480508)', info)
+    title = format_direction(account_label='小号(xy773249480508)', info=info)
     assert title == '买家小王 → 小号(xy773249480508)'
     assert '【' not in title and '】' not in title
 
@@ -213,12 +213,15 @@ def test_format_direction_carries_sender_and_receiver() -> None:
 def test_format_direction_prefers_resolved_sender() -> None:
     """调用方解析出的发送方昵称优先于报文原始值。"""
     info = {'send_user_name': '13993122', 'send_message': 'hi'}
-    assert format_direction('小号(222)', info, sender='网课学习私人助理') == '网课学习私人助理 → 小号(222)'
+    assert (
+        format_direction(account_label='小号(222)', info=info, sender='网课学习私人助理')
+        == '网课学习私人助理 → 小号(222)'
+    )
 
 
 def test_format_direction_falls_back_when_sender_unknown() -> None:
     info = {'send_user_name': '', 'send_user_id': '12345', 'send_message': 'hi'}
-    assert format_direction('小号(222)', info) == '12345 → 小号(222)'
+    assert format_direction(account_label='小号(222)', info=info) == '12345 → 小号(222)'
 
 
 def test_notifier_without_credentials_is_noop() -> None:
@@ -269,10 +272,10 @@ class FakeLarkClient:
         self.file_code = file_code
         self.calls: list[tuple[str, object]] = []
         v1 = SimpleNamespace(
-            message=FakeLarkResource(self, 'message'),
-            image=FakeLarkResource(self, 'image'),
-            file=FakeLarkResource(self, 'file'),
-            chat=FakeLarkResource(self, 'chat'),
+            message=FakeLarkResource(owner=self, name='message'),
+            image=FakeLarkResource(owner=self, name='image'),
+            file=FakeLarkResource(owner=self, name='file'),
+            chat=FakeLarkResource(owner=self, name='chat'),
         )
         self.im = SimpleNamespace(v1=v1)
 
@@ -381,7 +384,7 @@ def card_of(request) -> dict:
 def test_message_is_sent_through_the_sdk(monkeypatch) -> None:
     """发消息走 lark-oapi 的 im.v1.message.create，receive_id_type=chat_id。"""
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark)
     run(
         notifier.send_account_message(
             account_label='主力号', info={'send_user_name': '买家'}, text='在吗', details={'时间': '09-12 22:30:00'}
@@ -403,7 +406,7 @@ def test_message_is_sent_through_the_sdk(monkeypatch) -> None:
 def test_plain_text_is_sent_as_text_message(monkeypatch) -> None:
     """告警文本（send）走 text 消息类型。"""
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark)
     run(notifier.send('出问题了'))
 
     request = lark.last('message')
@@ -414,7 +417,7 @@ def test_plain_text_is_sent_as_text_message(monkeypatch) -> None:
 def test_nothing_is_sent_without_target_chat(monkeypatch) -> None:
     """只填了应用凭据、没选目标群时不发送（也不报错）。"""
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark, app=False)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, app=False)
     run(notifier.send_account_message(account_label='主力号', info={'send_user_name': '买家'}, text='在吗'))
 
     assert lark.calls == []
@@ -425,7 +428,7 @@ def test_send_failure_raises_notify_error(monkeypatch) -> None:
     from goofishpostman.accounts import NotifyError
 
     lark = FakeLarkClient(230002)
-    notifier = make_notifier(monkeypatch, lark)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark)
     with raises(NotifyError, match='230002'):
         run(notifier.send('在吗'))
 
@@ -472,7 +475,7 @@ def test_image_keeps_link_when_download_not_possible(monkeypatch) -> None:
 def test_upload_failure_falls_back_to_the_link(monkeypatch) -> None:
     """上传失败不能把整条推送带崩，退回链接即可。"""
     lark = FakeLarkClient(image_code=234001)
-    notifier = make_notifier(monkeypatch, lark)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark)
     run(
         notifier.send_account_message(
             account_label='主力号', info={'send_user_name': '买家'}, text=f'[图片]\n{IMAGE_URL}', images=(IMAGE_URL,)
@@ -505,7 +508,7 @@ def test_same_image_is_uploaded_once(monkeypatch) -> None:
 def test_list_chats_returns_groups(monkeypatch) -> None:
     """列群走 SDK 的 im.v1.chat.list（需要 im:chat:readonly 权限）。"""
     lark = FakeLarkClient()
-    notifier = make_notifier(monkeypatch, lark)
+    notifier = make_notifier(monkeypatch=monkeypatch, lark=lark)
     chats = run(notifier.list_chats())
 
     assert chats == [{'chat_id': 'oc_chat1', 'name': '卖家消息'}]
@@ -581,7 +584,7 @@ def test_audio_is_sent_as_a_separate_voice_message(monkeypatch) -> None:
 
 def test_audio_without_opus_or_ffmpeg_falls_back_to_the_link(monkeypatch) -> None:
     """飞书只收 OPUS；本机没有 ffmpeg 时不上传，保留链接（消息照发）。"""
-    monkeypatch.setattr('goofishpostman.accounts.which', lambda name: None)
+    monkeypatch.setattr(target='goofishpostman.accounts.which', name=lambda name: None)
     lark = FakeLarkClient()
     notifier = make_notifier(monkeypatch=monkeypatch, lark=lark, downloads=FakeDownloadClient(image=b'#!AMR\n\x00\x00'))
     media = {'kind': 'audio', 'url': 'https://example.com/voice.amr', 'cover': '', 'duration': 5}
@@ -601,7 +604,7 @@ def test_audio_without_opus_or_ffmpeg_falls_back_to_the_link(monkeypatch) -> Non
 
 def test_audio_is_transcoded_when_ffmpeg_exists(monkeypatch) -> None:
     """本机有 ffmpeg 时把非 OPUS 语音转成 OPUS 再上传（转码本身在别的用例里不该执行）。"""
-    monkeypatch.setattr('goofishpostman.accounts.which', lambda name: '/usr/bin/ffmpeg')
+    monkeypatch.setattr(target='goofishpostman.accounts.which', name=lambda name: '/usr/bin/ffmpeg')
     monkeypatch.setattr(
         target=FeishuNotifier, name='_transcode_with_ffmpeg', value=staticmethod(lambda data: OPUS_BYTES)
     )
@@ -674,7 +677,7 @@ def test_same_video_is_uploaded_once(monkeypatch) -> None:
 def test_sdk_is_not_loaded_without_credentials(monkeypatch) -> None:
     """没配凭据时不该去导 SDK —— 那个导入实测要 10 秒，所以是惰性的。"""
     loaded: list[int] = []
-    monkeypatch.setattr('goofishpostman.accounts.load_sdk', lambda: loaded.append(1))
+    monkeypatch.setattr(target='goofishpostman.accounts.load_sdk', name=lambda: loaded.append(1))
 
     notifier = FeishuNotifier()
     run(notifier.send('hi'))

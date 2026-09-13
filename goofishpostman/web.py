@@ -264,7 +264,7 @@ class WebApp:
         session = token_urlsafe(24)
         self.sessions.add(session)
         response = ChineseJSONResponse({'ok': True})
-        response.set_cookie(SESSION_COOKIE, session, httponly=True, samesite='lax')
+        response.set_cookie(key=SESSION_COOKIE, value=session, httponly=True, samesite='lax')
         return response
 
     # ── 状态与实时流 ──────────────────────────────────────────────────────────
@@ -475,7 +475,7 @@ class WebApp:
 
 def create_app(store: Store, supervisor: Supervisor) -> FastAPI:
     """组装 FastAPI 应用（方便测试，不关心谁来跑 ASGI）。"""
-    web_app = WebApp(store, supervisor)
+    web_app = WebApp(store=store, supervisor=supervisor)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -489,7 +489,7 @@ def create_app(store: Store, supervisor: Supervisor) -> FastAPI:
 
     app = FastAPI(title='闲鱼消息汇总', lifespan=lifespan, docs_url=None, redoc_url=None)
     app.router.route_class = ChineseJSONRoute
-    app.mount('/static', StaticFiles(directory=str(STATIC_DIR)), name='static')
+    app.mount(path='/static', app=StaticFiles(directory=str(STATIC_DIR)), name='static')
     web_app.register(app)
     return app
 
@@ -524,7 +524,7 @@ async def serve(
 
     server = Server(
         Config(
-            create_app(store, supervisor),
+            create_app(store=store, supervisor=supervisor),
             host=listen_host,
             port=listen_port,
             log_config=None,  # 日志交给 loguru
@@ -537,14 +537,14 @@ async def serve(
     loop = get_running_loop()
     for sig in (SIGINT, SIGTERM):
         with suppress(NotImplementedError, AttributeError, ValueError):
-            loop.add_signal_handler(sig, lambda: setattr(server, 'should_exit', True))
+            loop.add_signal_handler(sig=sig, callback=lambda: setattr(server, 'should_exit', True))
 
     async def report_ready() -> None:
         """等 uvicorn 真正监听后再回报地址（随机端口时才知道实际值）。"""
         while not server.started and not server.should_exit:
             await sleep(0.02)
         actual = get_actual_port(server) or listen_port
-        url = console_url(listen_host, actual)
+        url = console_url(host=listen_host, port=actual)
         if listen_host in ('', '0.0.0.0', '::'):
             logger.info(f'管理界面已启动: {url}（监听 {listen_host or "0.0.0.0"}:{actual}）')
         else:

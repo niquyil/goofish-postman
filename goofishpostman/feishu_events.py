@@ -86,7 +86,7 @@ def extract_text(content: str | None) -> str:
     text = parsed.get('text') if isinstance(parsed, dict) else None
     if not isinstance(text, str):
         return ''
-    return _MENTION_PLACEHOLDER.sub('', text).strip()
+    return _MENTION_PLACEHOLDER.sub(repl='', string=text).strip()
 
 
 class FeishuReplyListener:
@@ -125,9 +125,15 @@ class FeishuReplyListener:
         from .accounts import load_sdk  # 触发同一个惰性导入（约 10 秒，放在线程里做）
 
         load_sdk()
-        handler = EventDispatcherHandler.builder('', '').register_p2_im_message_receive_v1(self._on_event).build()
+        handler = (
+            EventDispatcherHandler.builder(encrypt_key='', verification_token='')
+            .register_p2_im_message_receive_v1(self._on_event)
+            .build()
+        )
         # 用 INFO：SDK 会打「connected to …」，出问题时要能从日志看出连接状态
-        client = ws.Client(self.app_id, self.app_secret, event_handler=handler, log_level=LogLevel.INFO)
+        client = ws.Client(
+            app_id=self.app_id, app_secret=self.app_secret, event_handler=handler, log_level=LogLevel.INFO
+        )
         try:
             client.start()
         except Exception as e:  # noqa: BLE001 - 监听线程挂掉不能影响主服务
@@ -146,10 +152,10 @@ class FeishuReplyListener:
         if incoming is None:
             # 用不上的事件也只进日志（网页事件流里能看到"收到了但没处理"）
             if self.on_ignored is not None:
-                run_coroutine_threadsafe(self.on_ignored(detail), loop)
+                run_coroutine_threadsafe(coro=self.on_ignored(detail), loop=loop)
             return
         logger.info(f'收到一条回复（引用 {incoming.target or "无"}）：{incoming.text}')
-        run_coroutine_threadsafe(self.on_reply(*incoming), loop)
+        run_coroutine_threadsafe(coro=self.on_reply(*incoming), loop=loop)
 
 
 def _debug_listen() -> None:
@@ -168,7 +174,7 @@ def _debug_listen() -> None:
 
     from .path import DATA_FILE
 
-    path = Path(environ.get('GOOFISH_DATA', DATA_FILE))
+    path = Path(environ.get(key='GOOFISH_DATA', default=DATA_FILE))
     notify = load(path.open(encoding='utf-8'))['notify']
     logger.remove()
     logger.add(lambda message: print(message, end=''), level='DEBUG')

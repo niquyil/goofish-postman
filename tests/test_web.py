@@ -28,9 +28,9 @@ def build_harness(tmp_dir, token: str = '') -> Harness:
     store = Store(tmp_dir / 'accounts.json')
     if token:
         store.update_web(token=token)
-    supervisor = Supervisor(store, RecordingNotifier())
+    supervisor = Supervisor(store=store, notifier=RecordingNotifier())
     supervisor.live_factory = FakeLive
-    client = TestClient(create_app(store, supervisor))
+    client = TestClient(create_app(store=store, supervisor=supervisor))
     return Harness(client=client, store=store, supervisor=supervisor)
 
 
@@ -52,7 +52,7 @@ def test_hidden_attribute_beats_display_rules(tmp_dir) -> None:
     """hidden 属性必须能真的把元素藏起来（UA 样式那条会被 display 规则压掉）。"""
     harness = build_harness(tmp_dir)
     css = harness.client.get('/static/style.css').text
-    rule = search(r'\[hidden\]\s*\{([^}]*)\}', css)
+    rule = search(pattern=r'\[hidden\]\s*\{([^}]*)\}', string=css)
     assert rule is not None, '缺少 [hidden] 规则'
     assert 'display: none' in rule.group(1) and '!important' in rule.group(1)
 
@@ -64,7 +64,7 @@ def test_qr_dialog_has_no_img_before_it_loads(tmp_dir) -> None:
     """
     harness = build_harness(tmp_dir)
     page = harness.client.get('/').text
-    qr_box = page.split('id="qr-box"', 1)[1].split('</div>', 1)[0]
+    qr_box = page.split(sep='id="qr-box"', maxsplit=1)[1].split(sep='</div>', maxsplit=1)[0]
     assert '<img' not in qr_box, f'二维码框里不该有 img: {qr_box}'
     assert '正在获取二维码' in qr_box
 

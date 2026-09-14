@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 # JS 里 device_id 用的字符表（注意末尾是 - 和 _，共 64 个）
 DEVICE_ID_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_'
+# cookie / Set-Cookie 里的 mtop token（值形如 `<md5>_<过期毫秒时间戳>`）
+_TOKEN_VALUE_PATTERN = compile_pattern(r'_m_h5_tk=([^;,\s]+)')
 
 
 def generate_mid() -> str:
@@ -423,6 +425,37 @@ def format_time(value: str | datetime | None) -> str:
     if value.tzinfo is not None:
         value = value.astimezone()
     return value.strftime('%m-%d %H:%M:%S')
+
+
+def extract_token_expiry(cookie: str) -> datetime | None:
+    """从 cookie 串里读出 mtop token（`_m_h5_tk`）的过期时间。
+
+    `_m_h5_tk` 形如 `<md5 校验>_<过期毫秒时间戳>`，服务端签发时把有效期写在里面
+    （实测登录后约 2 小时）。拿不到或格式不对时返回 None —— 调用方据此只说"未知"，
+    不要因为解析失败就判定登录态失效。
+    """
+    match = _TOKEN_VALUE_PATTERN.search(cookie)
+    if match is None:
+        return None
+    _, _, stamp = match.group(1).partition('_')
+    if not stamp.isdigit():
+        return None
+    try:
+        return datetime.fromtimestamp(int(stamp) / 1000, UTC)
+    except OverflowError, OSError, ValueError:
+        return None
+
+
+def describe_token_life(expires_at: datetime | None, now: datetime | None = None) -> str:
+    """给日志/界面用的一句话：登录态还剩多久（取不到过期时间时说"未知"）。"""
+    if expires_at is None:
+        return '登录态有效期未知'
+    minutes = int((expires_at - (now or datetime.now(UTC))).total_seconds() // 60)
+    if minutes <= 0:
+        return '登录态已过期'
+    if minutes < 60:
+        return f'登录态剩余 {minutes} 分钟'
+    return f'登录态剩余 {minutes // 60} 小时 {minutes % 60} 分'
 
 
 def extract_message_time(payload: dict) -> str:

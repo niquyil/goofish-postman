@@ -105,11 +105,55 @@ class ConnectOnlyLive:
         self.cookie = cookie
         self.handle_message = None
         self.on_connected = None
+        self.on_session = None
 
     async def main(self) -> None:
         if self.on_connected is not None:
             self.on_connected()
         await Event().wait()
+
+
+class SessionReportingLive:
+    """连上后按 orders 依次上报登录态，用于验证 cookie 回写与 token 剩余时间展示。
+
+    `orders` 里每项是 (cookie, 过期时间)；上报完就按 `fail_after` 抛错，让 Supervisor 走重连。
+    """
+
+    instances: ClassVar[list[SessionReportingLive]] = []
+
+    def __init__(self, cookie: str, orders: list[tuple[str, object]] | None = None, fail_after: bool = True) -> None:
+        self.cookie = cookie
+        self.orders = orders if orders is not None else [(cookie, None)]
+        self.fail_after = fail_after
+        self.handle_message = None
+        self.on_connected = None
+        self.on_session = None
+        self.on_session_info = None
+        SessionReportingLive.instances.append(self)
+
+    async def main(self) -> None:
+        if self.on_connected is not None:
+            self.on_connected()
+        for cookie, expires_at in self.orders:
+            if self.on_session is not None:
+                self.on_session(cookie, expires_at)
+        if self.fail_after:
+            raise RuntimeError('boom')
+        await Event().wait()
+
+
+class RecordingLiveFactory:
+    """记下每次重连用到的 cookie，用来验证「重连要拿配置里最新的那份」。"""
+
+    def __init__(self, fail_times: int = 1) -> None:
+        self.cookies: list[str] = []
+        self._fail_times = fail_times
+
+    def __call__(self, cookie: str) -> FailingLive:
+        self.cookies.append(cookie)
+        if len(self.cookies) <= self._fail_times:
+            return FailingLive(cookie)
+        return ConnectOnlyLive(cookie)
 
 
 class FailingLive:
@@ -119,6 +163,7 @@ class FailingLive:
         self.cookie = cookie
         self.handle_message = None
         self.on_connected = None
+        self.on_session = None
 
     async def main(self) -> None:
         raise RuntimeError('boom')
@@ -131,6 +176,7 @@ class ExpiredCookieLive:
         self.cookie = cookie
         self.handle_message = None
         self.on_connected = None
+        self.on_session = None
 
     async def main(self) -> None:
         raise CookieExpiredError('获取 token 失败，Cookie 可能已失效')

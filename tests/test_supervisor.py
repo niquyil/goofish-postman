@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from asyncio import get_running_loop, run, sleep
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pytest import mark
 
@@ -12,7 +12,15 @@ from goofishpostman.store import Store
 from goofishpostman.supervisor import MessageRecord, Supervisor, compute_next_backoff, format_time
 
 from fixtures import AROUSE_PAYLOAD, encrypted_record, plain_record, push_frame
-from helpers import GOOD_COOKIE, ConnectOnlyLive, ExpiredCookieLive, FailingLive, FakeLive, RecordingNotifier
+from helpers import (
+    GOOD_COOKIE,
+    ConnectOnlyLive,
+    ExpiredCookieLive,
+    FailingLive,
+    FakeLive,
+    RecordingLiveFactory,
+    RecordingNotifier,
+)
 
 
 def make_supervisor(tmp_dir, *, enabled: bool = True) -> tuple[Supervisor, Store, RecordingNotifier]:
@@ -213,6 +221,84 @@ def test_expired_cookie_is_reported_with_a_way_out(tmp_dir) -> None:
         # 退避重试照旧：用户换上新的 Cookie 后不用重启进程就能自愈
         assert runtime.retry_count >= 1
         assert runtime.task is not None
+
+        await supervisor.stop_all()
+
+    run(run_scenario())
+
+
+def test_rotated_cookie_is_written_back_to_the_config(tmp_dir) -> None:
+    """长连接续期后轮换的 cookie 要落盘，且带节流（不会每 10 分钟写一次文件）。
+
+    这是"跑久了提示获取 token 失败"的根因修复：轮换后的 token 以前只在内存里，
+    断线重连/重启进程又拿配置里那份过期 cookie 去换 token，自然换不到。
+    """
+
+    async def run_scenario() -> None:
+        supervisor, store, _ = make_supervisor(tmp_dir)
+        account_id = store.list_accounts()[0].id
+        fresh = 'unb=123456; tracknick=tester; _m_h5_tk=newtoken_1789235821040'
+        runtime = supervisor.runtimes[account_id]
+
+        supervisor._remember_session(account_id=account_id, cookie=fresh, expires_at=None)
+        assert store.get(account_id).cookie == fresh
+        assert runtime.account.cookie == fresh
+
+        # 节流：紧接着的第二次上报不再写盘（值也不更新）
+        supervisor._remember_session(account_id=account_id, cookie='unb=1; _m_h5_tk=x_1', expires_at=None)
+        assert store.get(account_id).cookie == fresh
+
+        # 值没变就不写（避免无意义落盘）
+        supervisor._cookie_saved_at[account_id] = 0
+        supervisor._remember_session(account_id=account_id, cookie=fresh, expires_at=None)
+        assert store.get(account_id).cookie == fresh
+
+    run(run_scenario())
+
+
+def test_token_life_is_shown_and_expiry_is_warned_once(tmp_dir) -> None:
+    """登录态剩余时间进运行态（界面要显示）；快到期时提醒一次（说明续期没成功）。"""
+
+    async def run_scenario() -> None:
+        supervisor, store, _ = make_supervisor(tmp_dir)
+        account_id = store.list_accounts()[0].id
+        runtime = supervisor.runtimes[account_id]
+        token = f'unb=123456; tracknick=tester; _m_h5_tk=abc_{int((datetime.now(UTC) + timedelta(hours=2)).timestamp() * 1000)}'
+        supervisor._remember_session(account_id=account_id, cookie=token, expires_at=None)
+
+        assert runtime.token_expires_at is not None
+        assert runtime.to_public()['token_life'].startswith('登录态剩余 1 小时')
+        assert '登录态剩余' in runtime.to_template()['meta']
+        assert not any('登录态将在' in e.message for e in supervisor.events)  # 还早，不提醒
+
+        soon = datetime.now(UTC) + timedelta(minutes=10)
+        supervisor._remember_session(account_id=account_id, cookie=token, expires_at=soon)
+        supervisor._remember_session(account_id=account_id, cookie=token, expires_at=soon)
+        warnings = [e for e in supervisor.events if '登录态将在' in e.message]
+        assert len(warnings) == 1  # 同一个有效期只提醒一次
+        assert warnings[0].level == 'warning'
+
+    run(run_scenario())
+
+
+def test_reconnect_uses_the_freshest_cookie_from_the_config(tmp_dir) -> None:
+    """重连必须用配置里最新那份 cookie（用户改过、或上一轮回写过的）。"""
+
+    async def run_scenario() -> None:
+        supervisor, store, _ = make_supervisor(tmp_dir)
+        account_id = store.list_accounts()[0].id
+        factory = RecordingLiveFactory(fail_times=1)  # 第一次失败 → 退避后重连
+        supervisor.live_factory = factory
+        await supervisor.start_enabled()
+        await wait_for(lambda: bool(factory.cookies), timeout=5)  # 第一次已经用旧 cookie 失败
+
+        fresh = 'unb=123456; tracknick=tester; _m_h5_tk=fresh_1789235821040'
+        store.update_cookie(account_id, fresh)
+        await wait_for(lambda: len(factory.cookies) >= 2, timeout=15)
+
+        assert factory.cookies[0] == GOOD_COOKIE
+        assert factory.cookies[1] == fresh
+        assert supervisor.runtimes[account_id].account.cookie.endswith('fresh_1789235821040')
 
         await supervisor.stop_all()
 

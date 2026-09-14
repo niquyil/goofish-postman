@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from asyncio import run
+from datetime import UTC, datetime, timedelta
 from re import search
 
 from fastapi.testclient import TestClient
@@ -325,6 +326,21 @@ def test_index_escapes_user_content(tmp_dir) -> None:
     html = harness.client.get('/').text
     assert '<img src=x onerror' not in html
     assert '&lt;img src=x onerror=alert(1)&gt;' in html
+
+
+def test_account_row_shows_the_login_life(tmp_dir) -> None:
+    """账号卡片要显示登录态剩余时间：长连接同步来新的有效期后，一眼能看出还剩多久。"""
+    harness = build_harness(tmp_dir)
+    account = harness.store.add(name='主力号', cookie=GOOD_COOKIE)
+    harness.supervisor.sync_runtimes()
+    runtime = harness.supervisor.runtimes[account.id]
+    runtime.status = 'running'
+    runtime.token_expires_at = datetime.now(UTC) + timedelta(hours=1, minutes=20)
+
+    html = harness.client.get('/').text
+    assert '登录态剩余 1 小时' in html  # 服务端首屏
+    state = harness.client.get('/api/state').json()
+    assert state['accounts'][0]['token_life'].startswith('登录态剩余 1 小时')  # 前端刷新也拿得到
 
 
 def test_account_error_box_is_always_rendered(tmp_dir) -> None:

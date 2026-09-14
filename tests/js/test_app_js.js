@@ -408,6 +408,45 @@ check('buildAccountRow 无昵称时不显示占位', () => {
   assert.ok(!node.textContent.includes('昵称：'), '无昵称时不该显示"昵称："');
 });
 
+check('buildAccountRow 显示登录态剩余时间', () => {
+  // 长连接每次续期都会把新的有效期同步过来（文案由后端生成），卡片明细里要能看到
+  const node = sandbox.buildAccountRow({
+    id: 'a1',
+    display_name: 'kisuke',
+    nickname: 'x',
+    enabled: true,
+    status: 'running',
+    has_cookie: true,
+    cookie_hint: '***x',
+    missing_cookie_keys: [],
+    message_count: 1,
+    retry_count: 0,
+    last_message_at: null,
+    token_life: '登录态剩余 1 小时 20 分',
+  });
+  const meta = node.querySelector('.account-meta').textContent;
+  assert.ok(meta.includes('登录态剩余 1 小时 20 分'), `明细里缺少登录态: ${meta}`);
+  assert.ok(meta.indexOf('Cookie ***x') < meta.indexOf('登录态剩余'), '登录态应紧跟 cookie 显示');
+});
+
+check('buildAccountRow 没有有效期信息时不显示登录态', () => {
+  const node = sandbox.buildAccountRow({
+    id: 'a1',
+    display_name: 'kisuke',
+    nickname: 'x',
+    enabled: true,
+    status: 'stopped',
+    has_cookie: true,
+    cookie_hint: '***x',
+    missing_cookie_keys: [],
+    message_count: 0,
+    retry_count: 0,
+    last_message_at: null,
+    token_life: '',
+  });
+  assert.ok(!node.textContent.includes('登录态'), '拿不到有效期就别显示这一项');
+});
+
 check('buildAccountRow 有重置昵称按钮', () => {
   const node = sandbox.buildAccountRow({
     id: 'a1',

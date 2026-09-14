@@ -1,5 +1,6 @@
 from asyncio import create_task, sleep, to_thread
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from json import dumps, loads
 from time import time
 from typing import TYPE_CHECKING
@@ -8,16 +9,19 @@ from urllib.parse import urlsplit
 from loguru import logger
 from websockets import connect
 
-from .cookies import Cookies
+from .cookies import Cookies, drop_cookies
 from .goofish_apis import Goofish
 from .goofish_utils import (
     carries_message,
     describe_message_content,
     describe_message_records,
+    describe_token_life,
     extract_message_content,
     extract_message_info,
     extract_session_title,
+    extract_token_expiry,
     format_content_text,
+    format_time,
     generate_device_id,
     generate_mid,
     generate_uuid,
@@ -49,6 +53,8 @@ _ECHO_HEADERS = ('app-key', 'ua', 'dt')
 
 _HEART_BEAT_INTERVAL = 15
 _TOKEN_REFRESH_INTERVAL = 600
+# 连续这么多次续期失败就主动断开重连（token 有效期约 2 小时，10 分钟一次 = 最多拖半小时）
+_TOKEN_REFRESH_MAX_FAILURES = 3
 
 
 class CookieExpiredError(RuntimeError):
@@ -117,6 +123,10 @@ class GoofishLive:
         self.on_connected = None
         # 非消息帧里可能夹带会话信息（商品标题），有就回调上去（Supervisor 会赋值）
         self.on_session_info = None
+        # 登录态变化（token 续期/轮换后的 cookie）时回调上去，参数是新的 cookie 串与 token 过期时间。
+        # Supervisor 会把它写回配置文件 —— 这样断线重连或重启进程后用的还是同一个登录态，
+        # 而不是当初粘贴进来、早就过期的旧 cookie（这是"跑久了就提示获取 token 失败"的根因）。
+        self.on_session = None
         # 当前长连接（main 里赋值）：回消息时优先复用它，不必为新连接付一次握手
         self.websocket: ClientConnection | None = None
         # 正在等待响应的 /r/SyncStatus/getState 请求（见 dispatch_message）
@@ -197,12 +207,17 @@ class GoofishLive:
         await self.send_message(websocket=websocket, cid=cid, toid=toid, message=TextMessage(text=text))
 
     async def init(self, websocket: ClientConnection) -> None:
+        # 本地 `_m_h5_tk` 已经过期时先丢掉：mtop 的套路是「没有 token → 服务端下发一个新的」，
+        # 带着过期 token 去问反而只会得到 SESSION_EXPIRED（实测），丢掉才有可能自愈。
+        self._drop_expired_token()
         # 换 token 失败＝登录态废了（实测服务端回 FAIL_SYS_SESSION_EXPIRED::Session过期），
         # 把服务端的原话带上去，网页和日志里才看得出到底是哪种失效
         result = self.goofish.get_token()
         token = (result.get('data') or {}).get('accessToken', '') if isinstance(result, dict) else ''
         if not token:
             raise CookieExpiredError(describe_token_failure(result))
+        # 换 token 这一步服务端会顺带刷新 _m_h5_tk / _m_h5_tk_enc：及时回写，别只留在内存里
+        self.report_session()
         await websocket.send(
             dumps(
                 {
@@ -251,19 +266,67 @@ class GoofishLive:
             await websocket.send(dumps({'lwp': '/!', 'headers': {'mid': generate_mid()}}))
             await sleep(_HEART_BEAT_INTERVAL)
 
-    @staticmethod
-    async def run_token_refresh(goofish: Goofish) -> None:
-        """后台续期登录态（单事件循环里用 sleep 而非线程）。"""
+    async def run_token_refresh(self) -> None:
+        """后台续期登录态（单事件循环里用 sleep 而非线程）。
+
+        mtop token 的有效期实测只有 2 小时左右，所以每 10 分钟打一次续期接口；
+        每次成功后都把轮换过的 cookie 交给上层落盘（见 `report_session`）。
+        连续失败 `_TOKEN_REFRESH_MAX_FAILURES` 次就主动断开长连接：让 Supervisor 重连一次，
+        重连时会先丢掉过期 token 重新申请（见 `_drop_expired_token`），比挂着一个换不到
+        token 的连接强。
+        """
+        failures = 0
         while True:
             await sleep(_TOKEN_REFRESH_INTERVAL)
             try:
-                result = await to_thread(goofish.refresh_token)
+                result = await to_thread(self.goofish.refresh_token)
                 ret = str((result.get('ret') or [''])[0]) if isinstance(result, dict) else ''
                 if ret and not ret.startswith('SUCCESS'):
+                    failures += 1
                     # 续期没成功往往就是登录态快过期了：早点留一行日志，别等断线才知道
-                    logger.warning(f'刷新 token 未成功（{ret}）')
+                    logger.warning(f'[{self.username}] 刷新 token 未成功（{ret}，连续 {failures} 次）')
+                    if failures >= _TOKEN_REFRESH_MAX_FAILURES:
+                        await self._restart_connection(reason=f'连续 {failures} 次刷新 token 失败')
+                    continue
+                failures = 0
+                self.report_session()
             except Exception as e:  # noqa: BLE001 - 一次失败不能让续期任务退出
-                logger.error(f'刷新 token 失败: {e}')
+                failures += 1
+                logger.error(f'[{self.username}] 刷新 token 失败: {e}（连续 {failures} 次）')
+                if failures >= _TOKEN_REFRESH_MAX_FAILURES:
+                    await self._restart_connection(reason=f'连续 {failures} 次刷新 token 出错')
+
+    async def _restart_connection(self, reason: str) -> None:
+        """主动断开当前长连接：Supervisor 会按退避重连，并重新申请一次 token。"""
+        websocket = self.websocket
+        if websocket is None:
+            return
+        logger.warning(f'[{self.username}] {reason}，主动断开长连接以便重新申请 token')
+        await websocket.close()
+
+    def report_session(self) -> None:
+        """把轮换后的 cookie 与 token 过期时间交给上层（Supervisor 负责落盘与展示）。"""
+        cookie = str(self.goofish.cookies)
+        expires_at = extract_token_expiry(cookie)
+        logger.debug(f'[{self.username}] 登录态已续期：{describe_token_life(expires_at)}')
+        if self.on_session is not None:
+            self.on_session(cookie, expires_at)
+
+    def _drop_expired_token(self) -> None:
+        """本地 token 已过期就先删掉，让服务端在首次请求时重新下发一个。
+
+        带着过期 token 去问，实测只会拿到 SESSION_EXPIRED（而且不会下发新 token）；
+        按 mtop 的套路，没有 token 时服务端才会回一个新的。
+        """
+        token = self.goofish.session.cookies.get(name='_m_h5_tk')
+        if not token:
+            return
+        expires_at = extract_token_expiry(f'_m_h5_tk={token}')
+        if expires_at is not None and expires_at > datetime.now(UTC):
+            return
+        reason = f'已于 {format_time(expires_at)} 过期' if expires_at else '拿不到有效期'
+        logger.info(f'[{self.username}] 本地 _m_h5_tk {reason}，丢掉旧 token 重新申请')
+        drop_cookies(self.goofish.session.cookies, '_m_h5_tk', '_m_h5_tk_enc')
 
     def _build_ws_headers(self) -> dict[str, str]:
         host = urlsplit(self.base_url).netloc
@@ -276,7 +339,7 @@ class GoofishLive:
             await self.init(websocket)
             if self.on_connected is not None:
                 self.on_connected()
-            tasks = [create_task(self.run_heart_beat(websocket)), create_task(self.run_token_refresh(self.goofish))]
+            tasks = [create_task(self.run_heart_beat(websocket)), create_task(self.run_token_refresh())]
             try:
                 yield websocket
             finally:

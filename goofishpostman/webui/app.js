@@ -104,6 +104,8 @@ function buildAccountRow(account) {
 
   const meta = [];
   if (account.has_cookie) meta.push(`Cookie ${account.cookie_hint}`);
+  // 登录态剩余时间：长连接每次续期都会把新的有效期同步过来（文案由后端生成，和首屏同一句）
+  if (account.token_life) meta.push(account.token_life);
   meta.push(`收到 ${account.message_count} 条`);
   if (account.last_message_at) meta.push(`最后 ${shortTime(account.last_message_at)}`);
   if (account.retry_count) meta.push(`重连 ${account.retry_count} 次`);

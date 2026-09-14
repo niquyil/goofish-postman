@@ -13,10 +13,12 @@ from loguru import logger
 from .accounts import FeishuNotifier, NotifyError, peer_name_from_card
 from .goofish_live import CookieExpiredError, GoofishLive, extract_message_text
 from .goofish_utils import (
+    describe_token_life,
     extract_message_images,
     extract_message_media,
     extract_message_time,
     extract_message_uid,
+    extract_token_expiry,
     format_time,
     is_silent_message,
 )
@@ -49,6 +51,11 @@ _MAX_EVENTS = 200
 _MAX_SEEN_MESSAGES = 2000
 # 会话 → 商品标题的映射保留条数
 _MAX_SESSION_TITLES = 500
+# 长连接轮换过的 cookie 多久回写一次配置文件（秒）。mtop token 有效期只有 2 小时左右，
+# 回写太慢的话断线重连/重启进程就会用上过期 token；太勤又没必要（每写一次都要落盘）。
+_COOKIE_SAVE_INTERVAL = 120.0
+# 登录态剩余不足这么多分钟就在事件流里提醒（说明续期没成功，快断了）
+_TOKEN_WARN_MINUTES = 30.0
 
 
 def compute_next_backoff(current: float, alive_for: float, healthy: bool) -> float:
@@ -118,9 +125,14 @@ class AccountRuntime:
     message_count: int = 0
     retry_count: int = 0
     last_message_at: datetime | None = None
+    # 登录态（mtop token）的过期时间：长连接每次续期后由 on_session 回调刷新
+    token_expires_at: datetime | None = None
+    # 已经为哪个过期时间提醒过（同一个有效期只提醒一次，避免刷屏）
+    token_warned_for: datetime | None = None
     task: Task | None = None
 
     def to_public(self) -> dict[str, Any]:
+        life = describe_token_life(self.token_expires_at) if self.token_expires_at else ''
         return {
             **self.account.to_public(),
             'status': self.status,
@@ -129,6 +141,8 @@ class AccountRuntime:
             'message_count': self.message_count,
             'retry_count': self.retry_count,
             'last_message_at': self.last_message_at.isoformat(timespec='seconds') if self.last_message_at else None,
+            'token_expires_at': self.token_expires_at.isoformat(timespec='seconds') if self.token_expires_at else None,
+            'token_life': life,
         }
 
     def to_template(self) -> dict[str, Any]:
@@ -137,6 +151,8 @@ class AccountRuntime:
         meta = []
         if public['has_cookie']:
             meta.append(f'Cookie {public["cookie_hint"]}')
+        if public['token_life']:
+            meta.append(public['token_life'])
         meta.append(f'收到 {public["message_count"]} 条')
         if public['last_message_at']:
             meta.append(f'最后 {format_time(public["last_message_at"])}')
@@ -180,6 +196,9 @@ class Supervisor:
         self._peer_names: dict[str, str] = {}
         # 账号 → 正在跑的长连接实例（飞书回复要借它发闲鱼消息）
         self._lives: dict[str, GoofishLive] = {}
+        # 登录态回写的节流：上次写盘的 cookie 与时刻（见 _remember_session）
+        self._cookie_saved: dict[str, str] = {}
+        self._cookie_saved_at: dict[str, float] = {}
         self._listeners: list[Callable[[dict], None]] = []
         self.sync_runtimes()
 
@@ -241,14 +260,18 @@ class Supervisor:
         while True:
             healthy = False
             started = get_running_loop().time()
+            # 每次重连都重新读一次配置：用户改过 cookie、或上一轮把轮换后的 cookie 回写了，
+            # 用的都必须是这份最新的（跑久了就提示"获取 token 失败"多半就是拿着旧 cookie 重连）
+            current = self.store.get(account.id) or account
+            runtime.account = current
             try:
-                live = self.live_factory(account.cookie)
+                live = self.live_factory(current.cookie)
             except KeyError as e:
                 # cookie 里缺 unb，重连也没用
                 self._fail(runtime=runtime, message=f'cookie 缺少 {e} 字段，请重新复制登录后的完整 cookie')
                 return
 
-            def publish_connected(_runtime: AccountRuntime = runtime) -> None:
+            def publish_connected(_runtime: AccountRuntime = runtime, _account: Account = current) -> None:
                 """连接建立时上报状态与事件（网页上要立刻能看到"已连接"）。
 
                 不参与重连退避判断：只握手成功不算健康，否则遇到"连上就被踢"的
@@ -262,7 +285,9 @@ class Supervisor:
                 if _runtime.started_at is None:
                     _runtime.started_at = datetime.now(UTC)
                 self.publish_event(
-                    level='info', account_id=account.id, message=f'{account.display_name} 已连接，开始监听'
+                    level='info',
+                    account_id=_account.id,
+                    message=f'{_account.display_name} 已连接，开始监听（{describe_token_life(_runtime.token_expires_at)}）',
                 )
                 self._broadcast({'type': 'account', 'account': _runtime.to_public()})
 
@@ -272,10 +297,16 @@ class Supervisor:
                 healthy = True
                 publish_connected()
 
+            def remember_session(cookie: str, expires_at: datetime | None) -> None:
+                """长连接续期/换 token 后把最新 cookie 与过期时间交回来。"""
+                self._remember_session(account_id=account.id, cookie=cookie, expires_at=expires_at)
+
             live.on_connected = publish_connected
             # 会话/预热记录里带商品标题，先记下来，转发消息时写进卡片明细
             live.on_session_info = self._remember_session_title
-            live.handle_message = self._make_handler(account=account, runtime=runtime, on_message=mark_healthy)
+            # 登录态续期后回写 cookie：断线重连、重启进程后还能接着用同一个登录态
+            live.on_session = remember_session
+            live.handle_message = self._make_handler(account=current, runtime=runtime, on_message=mark_healthy)
             # 记住实例：飞书里回复卡片时要用它的长连接把消息发到闲鱼
             self._lives[account.id] = live
             try:
@@ -300,6 +331,48 @@ class Supervisor:
             )
             self._broadcast({'type': 'account', 'account': runtime.to_public()})
             await sleep(backoff)
+
+    def _remember_session(self, account_id: str, cookie: str, expires_at: datetime | None) -> None:
+        """记下长连接当前的登录态：cookie 落盘（节流），过期时间进运行态供界面展示。
+
+        这是"跑久了就提示获取 token 失败"的关键修复：mtop token 只活 2 小时左右，
+        长连接会不停轮换它，但以前只留在内存里 —— 断线重连或重启进程时又拿配置里那份
+        早就过期的 cookie 去换 token，自然换不到。
+        """
+        runtime = self.runtimes.get(account_id)
+        if runtime is not None:
+            # 回调通常已经把过期时间解析好了；万一没给（旧实现/假实现），这里自己从 cookie 里读
+            runtime.token_expires_at = expires_at or extract_token_expiry(cookie) or runtime.token_expires_at
+            self._warn_if_token_expiring(runtime=runtime, account_id=account_id, expires_at=runtime.token_expires_at)
+        if not cookie:
+            return
+        if self._cookie_saved.get(account_id) == cookie:
+            return
+        if get_running_loop().time() - self._cookie_saved_at.get(account_id, 0) < _COOKIE_SAVE_INTERVAL:
+            return
+        self._cookie_saved[account_id] = cookie
+        self._cookie_saved_at[account_id] = get_running_loop().time()
+        updated = self.store.update_cookie(account_id, cookie)
+        if runtime is not None:
+            runtime.account = updated
+            self._broadcast({'type': 'account', 'account': runtime.to_public()})
+        logger.debug(f'[{account_id}] 已把续期后的 cookie 写回配置文件（Cookie {updated.mask_cookie()}）')
+
+    def _warn_if_token_expiring(self, runtime: AccountRuntime, account_id: str, expires_at: datetime | None) -> None:
+        """登录态快到期时提醒一次（说明自动续期没成功，快断线了）。"""
+        if expires_at is None or expires_at <= datetime.now(UTC):
+            return
+        if (expires_at - datetime.now(UTC)).total_seconds() > _TOKEN_WARN_MINUTES * 60:
+            return
+        if runtime.token_warned_for == expires_at:
+            return
+        runtime.token_warned_for = expires_at
+        self.publish_event(
+            level='warning',
+            account_id=account_id,
+            message=f'登录态将在 {describe_token_life(expires_at).removeprefix("登录态剩余 ")}后过期，'
+            f'自动续期尚未成功（{format_time(expires_at)}）',
+        )
 
     def _make_handler(self, account: Account, runtime: AccountRuntime, on_message: Callable[[], None]):
         async def handle_message(message, websocket: ClientConnection) -> None:

@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
-from asyncio import run
+from asyncio import create_task, run, sleep
+from datetime import UTC, datetime, timedelta
 from json import dumps, loads
 
 from loguru import logger
 from pytest import mark, raises
+from requests import Session
 
+from goofishpostman import goofish_live
+from goofishpostman.cookies import Cookies
 from goofishpostman.goofish_live import CookieExpiredError, GoofishLive, describe_token_failure
 from goofishpostman.types import APP_KEY
 
@@ -22,18 +26,47 @@ COOKIE_STR = 'unb=123456; tracknick=tester; _m_h5_tk=T_1'
 class FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.closed = False
 
     async def send(self, message: str) -> None:
         self.sent.append(loads(message))
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 async def _noop(message, websocket) -> None:
     return None
 
 
+class FakeGoofish:
+    """只实现 GoofishLive 用到的那几个接口：换 token、续期、以及会话里的 cookie。
+
+    cookie 用真实 jar 存：`report_session` / `_drop_expired_token` 都是围绕它工作的。
+    """
+
+    def __init__(self, result: dict, cookie: str = COOKIE_STR) -> None:
+        self.result = result
+        self.session = Session()
+        self.session.cookies.update(Cookies.from_str(cookie))
+        self.calls: list[str] = []
+
+    @property
+    def cookies(self) -> Cookies:
+        return Cookies.from_session(self.session)
+
+    def get_token(self) -> dict:
+        self.calls.append('get_token')
+        return self.result
+
+    def refresh_token(self) -> dict:
+        self.calls.append('refresh_token')
+        return self.result
+
+
 def make_live(token: str | None) -> GoofishLive:
     live = GoofishLive(COOKIE_STR)
-    live.goofish = type('FakeGoofish', (), {'get_token': lambda self: {'data': {'accessToken': token}}})()
+    live.goofish = FakeGoofish({'data': {'accessToken': token}})
     return live
 
 
@@ -69,9 +102,7 @@ def test_init_reports_the_server_reason_for_an_expired_cookie() -> None:
     否则用户只知道"失败了"，不知道是登录态过期还是网络问题。
     """
     live = GoofishLive(COOKIE_STR)
-    live.goofish = type(
-        'FakeGoofish', (), {'get_token': lambda self: {'ret': ['FAIL_SYS_SESSION_EXPIRED::Session过期'], 'data': {}}}
-    )()
+    live.goofish = FakeGoofish({'ret': ['FAIL_SYS_SESSION_EXPIRED::Session过期'], 'data': {}})
 
     with raises(CookieExpiredError, match='Session过期'):
         run(live.init(FakeWebSocket()))
@@ -123,6 +154,107 @@ def test_dispatch_message_ignores_non_message_pushes() -> None:
     for message in ({}, {'headers': {'mid': '1'}}, {'lwp': '/s/vulcan'}, {'body': {}}):
         run(live.dispatch_message(message=message, websocket=FakeWebSocket()))
     assert called == []
+
+
+# ── 登录态保活 ───────────────────────────────────────────────────────────────
+def test_report_session_hands_the_rotated_cookie_upward() -> None:
+    """续期/换 token 后要把会话里最新的 cookie 与有效期交给上层（它负责落盘）。
+
+    这是"跑久了就提示获取 token 失败"的修复点：mtop token 只活 2 小时左右，
+    轮换后的 cookie 以前只留在内存里，重连/重启就又拿配置里那份过期的去换 token。
+    """
+    live = make_live('TOKEN')
+    reported = []
+    live.on_session = lambda cookie, expires_at: reported.append((cookie, expires_at))
+
+    live.report_session()
+
+    cookie, expires_at = reported[0]
+    assert '_m_h5_tk=' in cookie
+    assert expires_at is not None
+
+
+def test_expired_local_token_is_dropped_before_asking_for_a_new_one() -> None:
+    """本地 token 过期就先删掉：带着过期 token 去问只会拿到 Session过期（实测）。"""
+    live = GoofishLive('unb=1; tracknick=x; _m_h5_tk=abc_1700000000000; _m_h5_tk_enc=enc')
+    assert live.goofish.session.cookies.get(name='_m_h5_tk') == 'abc_1700000000000'
+
+    live._drop_expired_token()
+
+    assert live.goofish.session.cookies.get(name='_m_h5_tk') is None
+    assert live.goofish.session.cookies.get(name='_m_h5_tk_enc') is None
+
+
+def test_valid_local_token_is_kept() -> None:
+    """没过期的 token 不能动：删了反而要多打一次请求。"""
+    expires = int((datetime.now(UTC) + timedelta(hours=1)).timestamp() * 1000)
+    live = GoofishLive(f'unb=1; tracknick=x; _m_h5_tk=abc_{expires}')
+
+    live._drop_expired_token()
+
+    assert live.goofish.session.cookies.get(name='_m_h5_tk') == f'abc_{expires}'
+
+
+def test_token_refresh_reports_the_session_each_round(monkeypatch) -> None:
+    """续期循环每成功一次就回调一次（顺带验证失败时不回调）。"""
+    live = make_live('TOKEN')
+    reported = []
+    live.on_session = lambda cookie, expires_at: reported.append(cookie)
+    monkeypatch.setattr(goofish_live, '_TOKEN_REFRESH_INTERVAL', 0.01)
+
+    async def run_two_rounds() -> None:
+        task = create_task(live.run_token_refresh())
+        while len(reported) < 2:
+            await sleep(0.05)
+        task.cancel()
+
+    run(run_two_rounds())
+    assert len(reported) >= 2
+    assert live.goofish.calls.count('refresh_token') >= 2
+
+
+def test_token_refresh_keeps_going_when_the_server_refuses(monkeypatch) -> None:
+    """续期失败（例如已经 Session过期）只记日志、不回调落盘，连续失败够多次才断开重连。"""
+    live = GoofishLive(COOKIE_STR)
+    live.goofish = FakeGoofish({'ret': ['FAIL_SYS_SESSION_EXPIRED::Session过期']})
+    reported = []
+    live.on_session = lambda cookie, expires_at: reported.append(cookie)
+    websocket = FakeWebSocket()
+    live.websocket = websocket
+    monkeypatch.setattr(goofish_live, '_TOKEN_REFRESH_INTERVAL', 0.01)
+
+    async def run_until_closed() -> None:
+        task = create_task(live.run_token_refresh())
+        while not websocket.closed:
+            await sleep(0.05)
+        task.cancel()
+
+    run(run_until_closed())
+    assert reported == []  # 没成功就不回写
+    assert live.goofish.calls.count('refresh_token') >= goofish_live._TOKEN_REFRESH_MAX_FAILURES
+
+
+def test_token_refresh_start_failure_also_counts(monkeypatch) -> None:
+    """续期抛异常（网络问题）也算失败，连续多次后同样断开重连。"""
+    live = make_live('TOKEN')
+
+    def boom() -> dict:
+        live.goofish.calls.append('refresh_token')
+        raise RuntimeError('网络断了')
+
+    live.goofish.refresh_token = boom  # type: ignore[method-assign]
+    websocket = FakeWebSocket()
+    live.websocket = websocket
+    monkeypatch.setattr(goofish_live, '_TOKEN_REFRESH_INTERVAL', 0.01)
+
+    async def run_until_closed() -> None:
+        task = create_task(live.run_token_refresh())
+        while not websocket.closed:
+            await sleep(0.05)
+        task.cancel()
+
+    run(run_until_closed())
+    assert live.goofish.calls.count('refresh_token') >= goofish_live._TOKEN_REFRESH_MAX_FAILURES
 
 
 # ── 同步状态协商（服务端说"同步数据太长"时才会补推积压的私信）────────────────

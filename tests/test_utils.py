@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
+from datetime import UTC, datetime, timedelta
 from hashlib import md5
 from json import dumps, loads
 from pathlib import Path
@@ -23,10 +24,12 @@ from goofishpostman.goofish_utils import (
     decrypt,
     decrypt_data,
     describe_message_records,
+    describe_token_life,
     extract_message_info,
     extract_message_time,
     extract_message_uid,
     extract_session_title,
+    extract_token_expiry,
     find_message_body,
     generate_device_id,
     generate_mid,
@@ -257,6 +260,33 @@ def test_extract_message_time_reads_nested_push_body() -> None:
 def test_extract_message_time_is_empty_for_non_message_payload() -> None:
     """会话/预热记录里没有消息体，取不到时间应当返回空串而不是抛异常。"""
     assert extract_message_time(AROUSE_PAYLOAD) == ''
+
+
+# ── 登录态（mtop token）有效期 ───────────────────────────────────────────────
+def test_extract_token_expiry_reads_the_timestamp_inside_the_token() -> None:
+    """`_m_h5_tk` 的值是 `<md5>_<过期毫秒时间戳>`（实测登录后约 2 小时）。
+
+    这是判断"登录态还剩多久"的唯一依据：长连接靠它决定什么时候必须续期，
+    界面也靠它显示剩余时间。
+    """
+    cookie = 'unb=13993122; _m_h5_tk=cfd07c9e50a358e2048063125c41c59d_1789235821040; tracknick=kisuke'
+    assert extract_token_expiry(cookie) == datetime(2026, 9, 12, 17, 57, 1, 40000, tzinfo=UTC)
+
+
+@mark.parametrize(
+    argnames='cookie', argvalues=['', 'unb=1; tracknick=x', '_m_h5_tk=', '_m_h5_tk=abc', '_m_h5_tk=abc_不是数字']
+)
+def test_extract_token_expiry_returns_none_when_unparsable(cookie: str) -> None:
+    """解析不出来就说"不知道"，绝不能因此判定登录态失效。"""
+    assert extract_token_expiry(cookie) is None
+
+
+def test_describe_token_life_words_the_remaining_time() -> None:
+    now = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
+    assert describe_token_life(None) == '登录态有效期未知'
+    assert describe_token_life(now - timedelta(minutes=1), now) == '登录态已过期'
+    assert describe_token_life(now + timedelta(minutes=42), now) == '登录态剩余 42 分钟'
+    assert describe_token_life(now + timedelta(hours=1, minutes=35), now) == '登录态剩余 1 小时 35 分'
 
 
 def test_extract_session_title_reads_item_title_from_session_info() -> None:

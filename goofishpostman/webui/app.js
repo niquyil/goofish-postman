@@ -130,9 +130,8 @@ function buildAccountRow(account) {
   });
 
   node.querySelector('.restart').addEventListener('click', () => {
-    api(`/api/accounts/${account.id}/restart`, { method: 'POST' })
-      .then(() => toast('已触发重连'))
-      .catch((error) => toast(error.message, true));
+    toast(`正在重连 ${account.display_name}…`);  // 结果看卡片状态与事件流（SSE 会推过来）
+    api(`/api/accounts/${account.id}/restart`, { method: 'POST' }).catch((error) => toast(error.message, true));
   });
 
   node.querySelector('.edit').addEventListener('click', () => {

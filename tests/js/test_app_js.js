@@ -270,14 +270,35 @@ vm.runInContext(fs.readFileSync(APP_JS, 'utf8'), sandbox, { filename: 'app.js' }
 
 // ── 断言 ─────────────────────────────────────────────────────────────────────
 const results = [];
+// 异步断言（例如点了按钮等一次 await）：收在这里，最后统一等完再打印结果
+const pending = [];
+
+function record(name, ok) {
+  results.push([name, ok]);
+}
+
 function check(name, fn) {
+  let value;
   try {
-    fn();
-    results.push([name, true]);
+    value = fn();
   } catch (error) {
-    results.push([name, false]);
+    record(name, false);
     console.error(`\n✗ ${name}\n  ${error.message}`);
+    return;
   }
+  if (value && typeof value.then === 'function') {
+    pending.push(
+      value.then(
+        () => record(name, true),
+        (error) => {
+          record(name, false);
+          console.error(`\n✗ ${name}\n  ${error.message}`);
+        },
+      ),
+    );
+    return;
+  }
+  record(name, true);
 }
 
 const sample = {
@@ -497,6 +518,24 @@ check('renderAccounts 渲染出错的账号：条目和错误原因都在，列�
   assert.strictEqual(document.getElementById('account-count').textContent, '1');
 });
 
+check('点「重连」会立刻给出反馈（不再是含糊的"已触发重连"）', async () => {
+  setAccounts([{ ...EXPIRED_ACCOUNT, id: 'a-restart', display_name: 'kisuke', status: 'running', error: '' }]);
+  sandbox.renderAccounts();
+
+  const row = document.getElementById('accounts').querySelectorAll('article')[0];
+  const button = row.querySelector('.restart');
+  assert.ok(button, '账号行里应有重连按钮');
+  const click = button.listeners.click?.[0];
+  assert.strictEqual(typeof click, 'function', '重连按钮要绑定点击事件');
+
+  click();
+  const toast = document.getElementById('toast');
+  assert.ok(toast.textContent.includes('正在重连 kisuke'), `提示应写清在重连哪个账号: ${toast.textContent}`);
+
+  await Promise.resolve(); // 等 api() 的 fetch 落地，确认不会把提示覆盖回旧文案
+  assert.ok(toast.textContent.includes('正在重连 kisuke'), `提示不该被覆盖: ${toast.textContent}`);
+});
+
 check('renderAccounts 一条出错不影响同列表里的其它账号', () => {
   setAccounts([EXPIRED_ACCOUNT, { ...EXPIRED_ACCOUNT, id: 'a-ok', display_name: '小号', status: 'running', error: '' }]);
   sandbox.renderAccounts();
@@ -707,11 +746,15 @@ check('点「刷新二维码」不会显示 null（回归：占位元素被摘�
 });
 
 // ── 输出 ─────────────────────────────────────────────────────────────────────
-console.log('\napp.js 渲染测试:');
-let failed = 0;
-for (const [name, ok] of results) {
-  console.log(`  ${ok ? '✓' : '✗'} ${name}`);
-  if (!ok) failed += 1;
+function report() {
+  console.log('\napp.js 渲染测试:');
+  let failed = 0;
+  for (const [name, ok] of results) {
+    console.log(`  ${ok ? '✓' : '✗'} ${name}`);
+    if (!ok) failed += 1;
+  }
+  console.log(`\n${results.length - failed}/${results.length} 项通过`);
+  process.exit(failed ? 1 : 0);
 }
-console.log(`\n${results.length - failed}/${results.length} 项通过`);
-process.exit(failed ? 1 : 0);
+
+Promise.all(pending).then(report);

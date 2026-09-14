@@ -227,6 +227,29 @@ def test_expired_cookie_is_reported_with_a_way_out(tmp_dir) -> None:
     run(run_scenario())
 
 
+def test_start_pushes_the_connecting_state(tmp_dir) -> None:
+    """点了「重连」以后卡片要立刻显示「连接中」，不能先停在「已停止」上等结果。"""
+
+    async def run_scenario() -> None:
+        supervisor, store, _ = make_supervisor(tmp_dir, enabled=False)
+        account = store.list_accounts()[0]
+        states = []
+        supervisor.subscribe(
+            lambda payload: states.append(payload['account']['status']) if payload['type'] == 'account' else None
+        )
+
+        supervisor.start(account)
+        assert states[-1] == 'starting'
+        assert supervisor.runtimes[account.id].to_template()['status_text'] == '连接中'
+
+        await wait_for(lambda: supervisor.runtimes[account.id].status == 'running')
+        assert states[-1] == 'running'
+
+        await supervisor.stop_all()
+
+    run(run_scenario())
+
+
 def test_rotated_cookie_is_written_back_to_the_config(tmp_dir) -> None:
     """长连接续期后轮换的 cookie 要落盘，且带节流（不会每 10 分钟写一次文件）。
 

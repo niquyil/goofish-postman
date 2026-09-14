@@ -343,6 +343,17 @@ def test_account_row_shows_the_login_life(tmp_dir) -> None:
     assert state['accounts'][0]['token_life'].startswith('登录态剩余 1 小时')  # 前端刷新也拿得到
 
 
+def test_account_actions_explain_themselves(tmp_dir) -> None:
+    """「重连」这类按钮界面上没地方写解释，要靠 title 说明用途（不然没人知道什么时候按）。"""
+    harness = build_harness(tmp_dir)
+    harness.store.add(name='主力号', cookie=GOOD_COOKIE)
+    harness.supervisor.sync_runtimes()
+
+    html = harness.client.get('/').text
+    assert '停掉当前长连接，立刻用现有 Cookie 重新连一次' in html
+    assert '替换登录 Cookie' in html  # 已有的两个按钮提示也别丢
+
+
 def test_account_error_box_is_always_rendered(tmp_dir) -> None:
     """回归：账号行模板里必须始终有 .account-error。
 

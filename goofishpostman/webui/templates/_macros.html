@@ -17,7 +17,7 @@
       <input type="checkbox" class="toggle"[% if account and account.enabled %] checked[% endif %]>
       <span class="slider"></span>
     </label>
-    <button type="button" class="ghost restart">重连</button>
+    <button type="button" class="ghost restart" title="停掉当前长连接，立刻用现有 Cookie 重新连一次（不改配置；连接卡住或在等重试倒计时时用它催一下）">重连</button>
     <button type="button" class="ghost edit" title="替换登录 Cookie">改 Cookie</button>
     <button type="button" class="ghost reset-nickname" title="清空本地缓存的昵称，等它下次发消息时重新学习">重置昵称</button>
     <button type="button" class="danger remove">删除</button>

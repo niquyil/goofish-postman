@@ -229,9 +229,10 @@ class Supervisor:
         if runtime.task is not None and not runtime.task.done():
             return
         runtime.account = account
-        runtime.status = 'starting'
         runtime.error = ''
         runtime.retry_count = 0
+        # 立刻把「连接中」推给界面：点了「重连」以后卡片不该还停在「已停止」上等结果
+        self._set_status(runtime=runtime, status='starting')
         runtime.task = create_task(self._run_account(account), name=f'goofish-{account.id}')
 
     async def stop(self, account_id: str) -> None:
